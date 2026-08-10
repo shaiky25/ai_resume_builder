@@ -1,0 +1,75 @@
+Payment:
+
+Create an OpenSpec change proposal for the Payment & Gatekeeping layer of a resume/
+LinkedIn optimization app. The payment provider must be swappable via configuration 
+— do not hardcode Stripe (or any specific gateway) into the proposal's requirements 
+or scenarios. Describe behavior in terms of a generic "payment provider" role, with 
+the concrete provider (Stripe, PayPal, Paddle, Lemon Squeezy, etc.) treated as an 
+environment/config value decided later.
+
+Context:
+- The gated action is a one-time, low-cost unlock (roughly $1-2) of 
+  has_premium_download_access on the user's record — not a subscription, not the 
+  metered chat-credit system (that's a separate table/concern in the Data layer).
+- Provider choice is explicitly deferred. Whatever is built must not assume a 
+  specific provider's SDK shape, webhook event names, or session model beyond 
+  what's common across major providers: (a) a hosted or embedded checkout the 
+  user is sent to, (b) a server-to-server notification (webhook or equivalent) 
+  confirming payment success/failure, (c) a signed/verifiable payload so the 
+  notification can't be spoofed.
+- Checkout session creation happens server-side only, using provider credentials 
+  stored in environment variables — never exposed to the client, regardless of 
+  which provider is configured.
+- The redirect back to the app after checkout must show a "processing" state, 
+  not an immediate unlock — access is only granted once the server-side 
+  notification is verified and processed, since the client-side redirect alone 
+  is not trustworthy proof of payment for any provider.
+- Webhook/notification handler responsibilities, provider-agnostic:
+  1. Verify the authenticity of the incoming notification using the configured 
+     provider's signature/verification mechanism before trusting any payload content
+  2. Handle a "payment succeeded" event and a "payment failed" event
+  3. Extract the user_id from data attached at checkout-session-creation time 
+     (metadata or equivalent), not inferred from email or other loose matching
+  4. On success, use the Supabase service-role key to set 
+     has_premium_download_access = true for that user_id, and log the transaction 
+     (amount, provider transaction/session id, provider name, timestamp) for 
+     reconciliation
+  5. Return success quickly and idempotently — most providers retry failed/slow 
+     webhook responses, so the handler must be safe to receive the same 
+     "succeeded" event more than once without double-granting or double-logging 
+     (dedupe on provider transaction/session id)
+- Provider selection lives in a single config value (e.g. PAYMENT_PROVIDER env 
+  var) that determines which credentials, webhook endpoint, and 
+  verification method are active. The proposal should describe this as an 
+  explicit capability — "provider is configuration, not code" — even though the 
+  concrete adapter implementation is out of scope for this proposal.
+
+Requirements to capture as capabilities:
+1. Provider-agnostic checkout session creation, scoped to the authenticated user, 
+   with user_id embedded for later retrieval
+2. Post-checkout "processing" UI state, decoupled from actual access grant
+3. Notification/webhook signature verification before processing any event, 
+   using whatever mechanism the configured provider requires
+4. Payment-succeeded handling: idempotent grant of has_premium_download_access 
+   via service-role write
+5. Payment-failed handling: clear failure state, no access granted
+6. Transaction logging for reconciliation, including which provider processed 
+   the transaction
+7. A single configuration point that determines active provider, credentials, 
+   and verification method — no provider-specific logic embedded elsewhere in 
+   the app
+
+Explicitly out of scope: the choice of payment provider itself (deferred to a 
+later decision), pricing/bundle strategy, the download-compilation logic 
+(reference the Frontend layer's browser-side export as the consumer of the 
+unlock flag), the message-credit gating system (separate concern, separate table).
+
+Dependencies/assumptions on other layers: assumes a has_premium_download_access 
+boolean (or equivalent) column exists in the Data & Management layer, writable 
+only via service-role key; assumes the frontend subscribes to this flag 
+(Supabase Realtime or polling) to reveal the download button once true, rather 
+than relying on the checkout redirect alone.
+
+Write this using OpenSpec's proposal structure: Why, What Changes, Impact 
+(affected specs/capabilities), and per-capability requirement scenarios in 
+Given/When/Then form.

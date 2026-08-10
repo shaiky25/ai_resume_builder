@@ -1,0 +1,39 @@
+Front End UI
+
+Create an OpenSpec change proposal for the Frontend & UI layer of a resume/LinkedIn 
+optimization app built on Next.js + Tailwind + Claude API + Supabase.
+
+Context:
+- This is client-side only. No server logic belongs in this proposal.
+- Architecture: chat pane (left) + live document preview (right), the preview stays 
+  blurred until the resume has enough structured content to be worth showing, or the 
+  user manually reveals it.
+- Voice input must be built now as a toggleable `isAudioInput` state, but the actual 
+  recording/transcription (react-media-recorder -> Whisper/AssemblyAI) is out of scope 
+  for this proposal — stub the hook so a later change can drop in the real 
+  implementation without touching the chat send path.
+- Document export (PDF via @react-pdf/renderer, DOCX via the `docx` library) must 
+  compile entirely in-browser and trigger a client-side download. No export should 
+  touch the server or Supabase Storage in this proposal.
+- The chat pane must treat voice-transcribed text and typed text identically — one 
+  send path, no branching logic downstream of input capture.
+
+Requirements to capture as capabilities:
+1. Chat message list + input component (send on Enter, disabled state while a 
+   response streams)
+2. Live document preview pane with blur/reveal behavior tied to an `isResumeReady` 
+   flag owned by the parent page
+3. Voice input toggle hook (state + wiring only, no transcription provider yet)
+4. Browser-side PDF export capability
+5. Browser-side DOCX export capability
+
+Explicitly out of scope: authentication, credit balance logic, Claude streaming 
+protocol, Supabase schema. Reference those as dependencies/assumptions only — this 
+proposal should describe what the frontend needs from them (e.g. "expects a 
+`resume_patch` stream event shape from the Edge Route") without specifying how 
+those layers implement it.
+
+Write this using OpenSpec's proposal structure: Why, What Changes, Impact 
+(affected specs/capabilities), and per-capability requirement scenarios in 
+Given/When/Then form.
+

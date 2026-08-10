@@ -1,0 +1,57 @@
+DB Layer:
+
+
+
+Create an OpenSpec change proposal for the Data & Management layer of a resume/
+LinkedIn optimization app, built entirely on Supabase (Auth, Postgres, Storage).
+
+Context:
+- Supabase Auth handles identity: Email/Password and Google login, each producing 
+  a unique user_id that all other tables key off of.
+- Three core tables:
+  1. profiles — basic user details (email, display name, plan tier, created_at)
+  2. user_credits — tracks free message count remaining and payment success 
+     status; this is the table the Backend & Security layer's /api/chat route 
+     reads and decrements
+  3. resumes — stores raw text inputs (parsed LinkedIn/resume content) and 
+     Claude's final structured output per user
+- Storage: one private bucket for raw uploaded LinkedIn PDFs, kept for future 
+  reference/re-parsing. Never public — access only via short-lived signed URLs 
+  generated server-side.
+- Row Level Security is non-negotiable on every table: a policy of 
+  auth.uid() = user_id on profiles, user_credits, and resumes so a user can only 
+  ever read/write their own rows via the client (anon key + user JWT).
+- user_credits specifically must be READ-ONLY to the client under RLS. The only 
+  writer allowed is the service-role key, used exclusively inside the Backend & 
+  Security layer's /api/chat route (reserve-before-call, refund-on-failure). No 
+  client-side policy should ever permit UPDATE on this table — this is the 
+  single most important boundary in the whole system, since without it a user 
+  could patch their own credit count directly.
+- The storage bucket needs its own policy: INSERT only for the authenticated 
+  owner uploading their own file (path-scoped by user_id), no public SELECT, 
+  signed URLs only for read access.
+- This layer should expose what the frontend needs to read directly (profiles, 
+  and a read-only view of user_credits for live balance display via Supabase 
+  Realtime) without needing to route those reads through the backend layer.
+
+Requirements to capture as capabilities:
+1. Auth provider configuration (Email/Password + Google)
+2. profiles table schema + RLS policy (owner read/write)
+3. user_credits table schema + RLS policy (owner read-only; service-role-only write)
+4. resumes table schema + RLS policy (owner read/write) for raw text + Claude output
+5. Private Storage bucket for LinkedIn PDFs with owner-scoped INSERT and signed-URL-only read access
+6. Realtime subscription support on user_credits so the frontend can reflect 
+   balance changes the moment the backend decrements them
+
+Explicitly out of scope: the /api/chat route's decrement/refund transaction logic 
+itself (reference it as the sole authorized writer to user_credits), frontend 
+rendering of credit balance or upload UI, Claude prompt/response handling.
+
+Dependencies/assumptions on other layers: the Backend & Security layer is assumed 
+to hold the service-role key server-side only and to be the exclusive caller of 
+any user_credits write; the frontend is assumed to request signed upload URLs 
+for the Storage bucket rather than uploading through a public path.
+
+Write this using OpenSpec's proposal structure: Why, What Changes, Impact 
+(affected specs/capabilities), and per-capability requirement scenarios in 
+Given/When/Then form.

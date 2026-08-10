@@ -1,0 +1,62 @@
+Backend Layer
+
+
+Create an OpenSpec change proposal for the Backend & Security layer of a resume/
+LinkedIn optimization app: a Next.js serverless Route Handler that sits between 
+the client and the Anthropic Claude API.
+
+Context:
+- The Anthropic API key must never be reachable from the client. All Claude calls 
+  are proxied server-side through a single secure route: /api/chat.
+- This route is the only place credits are ever checked or decremented. The client 
+  never writes to profiles.credits_remaining directly — that column is only 
+  mutated using Supabase's service-role key, inside this route.
+- Auth verification happens first, before anything else: validate the caller's 
+  Supabase JWT (server-side client, not a client-passed user ID) before touching 
+  credits or Claude.
+- Credit gate is a hard stop: read credits_remaining for the authenticated user; 
+  if insufficient, return 403 Forbidden immediately — no Claude call is made, so 
+  no cost is ever incurred on a request that was going to be rejected anyway.
+- If sufficient, reserve/decrement the credit BEFORE opening the Claude stream, 
+  not after — this prevents a burst of concurrent requests from racing past the 
+  check. If the Claude call then errors or the connection drops mid-stream, the 
+  reserved credit must be refunded (write a compensating entry to credit_ledger), 
+  not silently lost.
+- This route owns "System Prompt Injection": it assembles the hidden Impact-Writer 
+  Master Prompt server-side and appends the user's LinkedIn/resume context 
+  (pulled from Supabase, not trusted from client input) before sending the 
+  composed request to Anthropic. The master prompt content itself is never 
+  exposed to the client in request or response payloads.
+- Response is streamed back to the client (SSE or ReadableStream), and on stream 
+  completion this route writes an analytics_events row and a credit_ledger row 
+  reflecting actual usage.
+- Rate limiting per user (independent of credit balance) belongs to this layer too, 
+  to prevent burst abuse even from a user who technically has credits.
+
+Requirements to capture as capabilities:
+1. JWT-authenticated request handling for POST /api/chat (reject unauthenticated 
+   requests before any other logic runs)
+2. Credit-check gate returning 403 Forbidden with no Claude call and no charge 
+   when the user is at or below their cap
+3. Credit reserve-before-call / refund-on-failure transaction pattern
+4. Server-side system prompt injection (Impact-Writer Master Prompt + LinkedIn 
+   context), fully hidden from client-visible payloads
+5. Streaming proxy of Claude's response back to the client
+6. Post-stream ledger and analytics logging (actual usage recorded regardless of 
+   whether the reserved credit amount matched exactly)
+7. Per-user rate limiting independent of the credit balance check
+
+Explicitly out of scope: frontend rendering of streamed tokens, Supabase schema/
+RLS policy definitions (reference them as a dependency), the Claude API request/
+response contract itself (model choice, max_tokens, prompt template internals) 
+beyond noting that this route is where they're configured.
+
+Dependencies/assumptions on other layers: expects a profiles table with 
+credits_remaining and a credit_ledger table already defined by the Supabase/
+Security layer with RLS preventing client-side writes to either; expects the 
+frontend to call this route via fetch/EventSource and handle a 403 as a 
+"show upgrade/out-of-credits" UI state, not a generic error.
+
+Write this using OpenSpec's proposal structure: Why, What Changes, Impact 
+(affected specs/capabilities), and per-capability requirement scenarios in 
+Given/When/Then form.
