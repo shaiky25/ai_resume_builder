@@ -13,8 +13,11 @@ import type {
   ChatStreamEvent,
   StreamChatParams,
 } from "./anthropicClient";
+import type { ResumeExtractionModelClient } from "./resumeExtraction";
+import type { ChatTurnInput } from "./types";
 import type { RateLimiter } from "./rateLimiter";
 import type { AuthenticatedUser } from "@/lib/supabase/serverClient";
+import type { ResumeDraft } from "@/types/resume";
 
 const VALID_AUTH_HEADER = "Bearer valid-token";
 const USER_ID = "user-1";
@@ -79,10 +82,42 @@ function createFakeCreditsGateway(initialBalances: Record<string, number>) {
   return { gateway, balances, ledger };
 }
 
+/**
+ * In-memory fake modeling `persistStructuredOutput`'s user_id scoping: each
+ * write is keyed by the `userId` argument the caller passed, exactly like
+ * the real implementation's `.eq("user_id", userId)` scoping on both the
+ * lookup and the write — so a bug that passed the wrong user id would show
+ * up here as data landing under the wrong key (1.7).
+ */
 function createFakeResumeContextGateway(context: ResumeContext | null = null) {
+  const persisted = new Map<string, unknown>();
   const getLatestResumeContext = vi.fn(async (): Promise<ResumeContext | null> => context);
-  const gateway: ResumeContextGateway = { getLatestResumeContext };
-  return gateway;
+  const persistStructuredOutput = vi.fn(async (userId: string, structuredOutput: unknown) => {
+    persisted.set(userId, structuredOutput);
+  });
+  const gateway: ResumeContextGateway = { getLatestResumeContext, persistStructuredOutput };
+  return { gateway, persisted };
+}
+
+interface FakeResumeExtractionClientOptions {
+  result?: ResumeDraft | null;
+  throws?: boolean;
+}
+
+function createFakeResumeExtractionClient(options: FakeResumeExtractionClientOptions = {}) {
+  const { result = null, throws = false } = options;
+  const calls: ChatTurnInput[][] = [];
+
+  const extractResume = vi.fn(async (conversation: ChatTurnInput[]): Promise<ResumeDraft | null> => {
+    calls.push(conversation);
+    if (throws) {
+      throw new Error("simulated extraction failure");
+    }
+    return result;
+  });
+
+  const client: ResumeExtractionModelClient = { extractResume };
+  return { client, calls };
 }
 
 function createFakeUsageLogger() {
@@ -177,9 +212,10 @@ function buildDeps(overrides: Partial<ChatRequestDependencies>): ChatRequestDepe
     verifyUser: createFakeVerifyUser({ id: USER_ID }),
     rateLimiter: createFakeRateLimiter(true),
     creditsGateway: createFakeCreditsGateway({ [USER_ID]: 5 }).gateway,
-    resumeContextGateway: createFakeResumeContextGateway(null),
+    resumeContextGateway: createFakeResumeContextGateway(null).gateway,
     usageLogger: createFakeUsageLogger().logger,
     modelClient: createFakeModelClient().client,
+    resumeExtractionClient: createFakeResumeExtractionClient().client,
     generateRequestId: () => `req-${counter++}`,
     ...overrides,
   };
@@ -304,5 +340,113 @@ describe("handleChatRequest", () => {
     expect(creditsGateway.getCreditsRemaining).not.toHaveBeenCalled();
     expect(creditsGateway.reserve).not.toHaveBeenCalled();
     expect(modelCalls).toHaveLength(0);
+  });
+
+  // 1.5 — successful turn persists structured_output for the correct user
+  it("persists extracted structured_output for the correct user after a successful turn", async () => {
+    const extracted: ResumeDraft = {
+      name: "Jordan Rivera",
+      title: "Senior Backend Engineer",
+      summary: "Backend engineer.",
+      experience: [{ company: "Acme", role: "Engineer", description: "Did things." }],
+    };
+    const { gateway: resumeContextGateway, persisted } = createFakeResumeContextGateway(null);
+    const { client: resumeExtractionClient, calls: extractionCalls } =
+      createFakeResumeExtractionClient({ result: extracted });
+
+    const deps = buildDeps({ resumeContextGateway, resumeExtractionClient });
+
+    const response = await handleChatRequest(makeRequest(), deps);
+    await readBodyToText(response);
+
+    await vi.waitFor(() => {
+      expect(persisted.get(USER_ID)).toEqual(extracted);
+    });
+
+    expect(extractionCalls).toHaveLength(1);
+    expect(extractionCalls[0]).toEqual([
+      { role: "user", content: "Help me rewrite this bullet point." },
+      { role: "assistant", content: "Great work, here's a bullet point." },
+    ]);
+  });
+
+  // 1.6 — extraction failure does not alter the already-delivered chat
+  // response and does not write partial/corrupt structured_output
+  it("does not alter the delivered chat response or persist anything when extraction fails", async () => {
+    const { gateway: resumeContextGateway, persisted } = createFakeResumeContextGateway(null);
+    const { client: resumeExtractionClient, calls: extractionCalls } =
+      createFakeResumeExtractionClient({ throws: true });
+
+    const deps = buildDeps({ resumeContextGateway, resumeExtractionClient });
+
+    const response = await handleChatRequest(makeRequest(), deps);
+    expect(response.status).toBe(200);
+
+    const bodyText = await readBodyToText(response);
+    expect(bodyText).toContain(
+      `event: message\ndata: ${JSON.stringify({ text: "Great work, " })}`
+    );
+    expect(bodyText).toContain(
+      `event: message\ndata: ${JSON.stringify({ text: "here's a bullet point." })}`
+    );
+    expect(bodyText).toContain("event: done");
+    expect(bodyText).not.toContain("event: error");
+
+    await vi.waitFor(() => {
+      expect(extractionCalls).toHaveLength(1);
+    });
+
+    expect(persisted.size).toBe(0);
+  });
+
+  // 1.7 — extraction output for one user is never written to another
+  // user's resumes row
+  it("scopes persisted structured_output to the requesting user, never another user's row", async () => {
+    const { gateway: resumeContextGateway, persisted } = createFakeResumeContextGateway(null);
+
+    const userAResume: ResumeDraft = {
+      name: "User A",
+      title: "",
+      summary: "",
+      experience: [],
+    };
+    const userBResume: ResumeDraft = {
+      name: "User B",
+      title: "",
+      summary: "",
+      experience: [],
+    };
+
+    const creditsGateway = createFakeCreditsGateway({ "user-a": 5, "user-b": 5 }).gateway;
+
+    const depsA = buildDeps({
+      resumeContextGateway,
+      creditsGateway,
+      verifyUser: createFakeVerifyUser({ id: "user-a" }),
+      resumeExtractionClient: createFakeResumeExtractionClient({ result: userAResume }).client,
+    });
+    const depsB = buildDeps({
+      resumeContextGateway,
+      creditsGateway,
+      verifyUser: createFakeVerifyUser({ id: "user-b" }),
+      resumeExtractionClient: createFakeResumeExtractionClient({ result: userBResume }).client,
+    });
+
+    const [responseA, responseB] = await Promise.all([
+      handleChatRequest(makeRequest(), depsA),
+      handleChatRequest(makeRequest(), depsB),
+    ]);
+    await Promise.all([readBodyToText(responseA), readBodyToText(responseB)]);
+
+    await vi.waitFor(() => {
+      expect(persisted.get("user-a")).toEqual(userAResume);
+      expect(persisted.get("user-b")).toEqual(userBResume);
+    });
+
+    // Each user's persisted output is exactly their own — never swapped or
+    // merged across the two concurrent requests.
+    expect(persisted.get("user-a")).not.toEqual(userBResume);
+    expect(persisted.get("user-b")).not.toEqual(userAResume);
+    expect(persisted.size).toBe(2);
   });
 });

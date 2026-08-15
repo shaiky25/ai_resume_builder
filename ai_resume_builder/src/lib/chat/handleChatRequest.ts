@@ -9,6 +9,10 @@ import {
 } from "./resumeContext";
 import { SupabaseUsageLogger, type UsageLogger } from "./usageLogger";
 import { AnthropicChatModelClient, type ChatModelClient, type ChatStream } from "./anthropicClient";
+import {
+  AnthropicResumeExtractionModelClient,
+  type ResumeExtractionModelClient,
+} from "./resumeExtraction";
 import { chatRateLimiter, type RateLimiter } from "./rateLimiter";
 import type { ChatApiRequestBody, ChatTurnInput } from "./types";
 
@@ -22,6 +26,7 @@ export interface ChatRequestDependencies {
   resumeContextGateway: ResumeContextGateway;
   usageLogger: UsageLogger;
   modelClient: ChatModelClient;
+  resumeExtractionClient: ResumeExtractionModelClient;
   generateRequestId: () => string;
 }
 
@@ -33,6 +38,7 @@ export function createDefaultDependencies(): ChatRequestDependencies {
     resumeContextGateway: new SupabaseResumeContextGateway(),
     usageLogger: new SupabaseUsageLogger(),
     modelClient: new AnthropicChatModelClient(),
+    resumeExtractionClient: new AnthropicResumeExtractionModelClient(),
     generateRequestId: () => randomUUID(),
   };
 }
@@ -190,9 +196,11 @@ export async function handleChatRequest(
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      let assistantText = "";
       try {
         for await (const event of chatStream.events) {
           if (event.type === "text_delta" && event.text) {
+            assistantText += event.text;
             controller.enqueue(
               encoder.encode(
                 `event: message\ndata: ${JSON.stringify({ text: event.text })}\n\n`
@@ -212,6 +220,26 @@ export async function handleChatRequest(
 
         controller.enqueue(encoder.encode(`event: done\ndata: {}\n\n`));
         controller.close();
+
+        // 9. Structured resume extraction (resume-structured-extraction),
+        // run only after `event: done` has already been queued to the
+        // client — a failure here must never affect the chat response the
+        // client already received (design.md decision 2). Both the
+        // extraction call and the persistence step swallow their own
+        // errors below rather than throwing.
+        try {
+          const structuredOutput = await deps.resumeExtractionClient.extractResume([
+            ...history,
+            { role: "user", content: body.message },
+            { role: "assistant", content: assistantText },
+          ]);
+
+          if (structuredOutput) {
+            await deps.resumeContextGateway.persistStructuredOutput(user.id, structuredOutput);
+          }
+        } catch (err) {
+          console.error("Resume structured extraction failed", err, { requestId });
+        }
       } catch (err) {
         console.error("Claude stream failed", err);
         await refund("claude_stream_error");

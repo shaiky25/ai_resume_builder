@@ -24,3 +24,79 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Chat experience polish: CSS-only animation, no JS animation loop. */
+
+@keyframes message-entry {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes thinking-dot-pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.85);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes recording-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(220, 38, 38, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0);
+  }
+}
+
+@keyframes ambient-drift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.animate-message-entry {
+  animation: message-entry 0.25s ease-out both;
+}
+
+.animate-thinking-dot {
+  animation: thinking-dot-pulse 1.2s ease-in-out infinite;
+}
+
+.animate-recording-pulse {
+  animation: recording-pulse 1.6s ease-out infinite;
+}
+
+.animate-ambient-drift {
+  background-size: 200% 200%;
+  animation: ambient-drift 18s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-message-entry,
+  .animate-thinking-dot,
+  .animate-recording-pulse,
+  .animate-ambient-drift {
+    animation: none;
+  }
+}

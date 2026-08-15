@@ -13,6 +13,15 @@ export interface ResumeContextGateway {
    * composed Claude prompt uses — never the client's request body.
    */
   getLatestResumeContext(userId: string): Promise<ResumeContext | null>;
+
+  /**
+   * Persists derived structured resume data (resume-structured-extraction)
+   * to the user's most recently updated `resumes` row, scoped to `userId`
+   * on every read and write so extraction output for one user can never
+   * land on another user's row. Updates the existing row if one exists,
+   * otherwise inserts a new one.
+   */
+  persistStructuredOutput(userId: string, structuredOutput: unknown): Promise<void>;
 }
 
 export class SupabaseResumeContextGateway implements ResumeContextGateway {
@@ -39,5 +48,40 @@ export class SupabaseResumeContextGateway implements ResumeContextGateway {
       rawText: (data.raw_text as string | null) ?? null,
       structuredOutput: data.structured_output ?? null,
     };
+  }
+
+  async persistStructuredOutput(userId: string, structuredOutput: unknown): Promise<void> {
+    const { data: existing, error: selectError } = await this.client
+      .from("resumes")
+      .select("id")
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (selectError) {
+      throw new Error(`Failed to look up existing resume row: ${selectError.message}`);
+    }
+
+    if (existing) {
+      const { error } = await this.client
+        .from("resumes")
+        .update({ structured_output: structuredOutput, updated_at: new Date().toISOString() })
+        .eq("id", existing.id as string)
+        .eq("user_id", userId);
+
+      if (error) {
+        throw new Error(`Failed to update resumes.structured_output: ${error.message}`);
+      }
+      return;
+    }
+
+    const { error } = await this.client
+      .from("resumes")
+      .insert({ user_id: userId, structured_output: structuredOutput });
+
+    if (error) {
+      throw new Error(`Failed to insert resumes row: ${error.message}`);
+    }
   }
 }

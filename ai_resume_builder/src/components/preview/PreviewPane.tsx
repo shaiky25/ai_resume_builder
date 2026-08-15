@@ -2,16 +2,29 @@
 
 import { useState } from "react";
 import type { ResumeDraft } from "@/types/resume";
+import { CheckoutButton } from "@/components/payment/CheckoutButton";
 import { ExportControls } from "./ExportControls";
 
 interface PreviewPaneProps {
   resumeDraft: ResumeDraft;
   isResumeReady: boolean;
+  hasPremiumDownloadAccess: boolean;
+  accessToken: string;
 }
 
-export function PreviewPane({ resumeDraft, isResumeReady }: PreviewPaneProps) {
+export function PreviewPane({
+  resumeDraft,
+  isResumeReady,
+  hasPremiumDownloadAccess,
+  accessToken,
+}: PreviewPaneProps) {
   const [manuallyRevealed, setManuallyRevealed] = useState(false);
-  const isBlurred = !isResumeReady && !manuallyRevealed;
+  const hasDraftContent =
+    resumeDraft.name.trim().length > 0 ||
+    resumeDraft.title.trim().length > 0 ||
+    resumeDraft.summary.trim().length > 0 ||
+    resumeDraft.experience.length > 0;
+  const isBlurred = hasDraftContent && !isResumeReady && !manuallyRevealed;
 
   return (
     <section className="flex h-full flex-1 flex-col">
@@ -19,40 +32,57 @@ export function PreviewPane({ resumeDraft, isResumeReady }: PreviewPaneProps) {
         <h2 className="text-sm font-medium text-zinc-600 dark:text-zinc-300">
           Resume Preview
         </h2>
-        <ExportControls resumeDraft={resumeDraft} disabled={isBlurred} />
+        <div className="flex items-center gap-2">
+          {!hasPremiumDownloadAccess && <CheckoutButton accessToken={accessToken} />}
+          <ExportControls
+            resumeDraft={resumeDraft}
+            disabled={!isResumeReady || !hasPremiumDownloadAccess}
+          />
+        </div>
       </div>
 
       <div className="relative flex-1 overflow-y-auto p-6">
-        <div
-          className={`mx-auto max-w-xl rounded-lg border border-zinc-200 bg-white p-8 shadow-sm transition-[filter] duration-200 dark:border-zinc-800 dark:bg-zinc-950 ${
-            isBlurred ? "pointer-events-none blur-md select-none" : ""
-          }`}
-        >
-          <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
-            {resumeDraft.name || "Your Name"}
-          </h1>
-          <p className="mt-1 text-zinc-600 dark:text-zinc-400">
-            {resumeDraft.title || "Target Role"}
-          </p>
-          <p className="mt-4 text-sm leading-6 text-zinc-700 dark:text-zinc-300">
-            {resumeDraft.summary || "A short professional summary will appear here."}
-          </p>
+        {hasDraftContent ? (
+          <div
+            className={`mx-auto max-w-xl rounded-lg border border-zinc-200 bg-white p-8 shadow-sm transition-[filter] duration-200 dark:border-zinc-800 dark:bg-zinc-950 ${
+              isBlurred ? "pointer-events-none blur-md select-none" : ""
+            }`}
+          >
+            <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
+              {resumeDraft.name || "Your Name"}
+            </h1>
+            <p className="mt-1 text-zinc-600 dark:text-zinc-400">
+              {resumeDraft.title || "Target Role"}
+            </p>
+            <p className="mt-4 text-sm leading-6 text-zinc-700 dark:text-zinc-300">
+              {resumeDraft.summary || "A short professional summary will appear here."}
+            </p>
 
-          {resumeDraft.experience.length > 0 && (
-            <div className="mt-6 flex flex-col gap-4">
-              {resumeDraft.experience.map((entry, index) => (
-                <div key={`${entry.company}-${index}`}>
-                  <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">
-                    {entry.role} · {entry.company}
-                  </p>
-                  <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                    {entry.description}
-                  </p>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+            {resumeDraft.experience.length > 0 && (
+              <div className="mt-6 flex flex-col gap-4">
+                {resumeDraft.experience.map((entry, index) => (
+                  <div key={`${entry.company}-${index}`}>
+                    <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">
+                      {entry.role} · {entry.company}
+                    </p>
+                    <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                      {entry.description}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              Your resume will take shape here
+            </p>
+            <p className="max-w-xs text-xs text-zinc-400 dark:text-zinc-500">
+              Start chatting with your career coach and this preview will fill in automatically.
+            </p>
+          </div>
+        )}
 
         {isBlurred && (
           <div className="absolute inset-0 flex items-center justify-center">

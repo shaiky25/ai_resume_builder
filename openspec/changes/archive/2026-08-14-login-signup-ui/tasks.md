@@ -22,11 +22,11 @@
 
 ## 4. Verification
 
-- [ ] 4.1 Manually verify: anonymous visitor loads `/` and sees the landing view, not the chat interface
-- [ ] 4.2 Manually verify: clicking "Start chatting" while anonymous redirects to `/login` with no message sent
-- [ ] 4.3 Manually verify: Email/Password sign-up creates a new account and lands the visitor on the authenticated chat view at `/`
-- [ ] 4.4 Manually verify: Email/Password sign-up with an already-registered email shows an inline error and does not create a duplicate account
-- [ ] 4.5 Manually verify: Email/Password sign-in with correct and incorrect credentials both behave per spec (success vs. inline error)
+- [x] 4.1 Manually verify: anonymous visitor loads `/` and sees the landing view, not the chat interface
+- [x] 4.2 Manually verify: clicking "Start chatting" while anonymous redirects to `/login` with no message sent
+- [x] 4.3 Manually verify: Email/Password sign-up creates a new account and lands the visitor on the authenticated chat view at `/`
+- [x] 4.4 Manually verify: Email/Password sign-up with an already-registered email shows an inline error and does not create a duplicate account
+- [x] 4.5 Manually verify: Email/Password sign-in with correct and incorrect credentials both behave per spec (success vs. inline error)
 - [x] 4.6 Manually verify: Google sign-in completes and lands the visitor on the authenticated chat view at `/`
-- [ ] 4.7 Manually verify: reloading the page after authentication keeps the visitor signed in (no flash back to the landing view)
-- [ ] 4.8 Revisit `db-layer-data-management` task 1.3 (same-`user_id` verification across providers) now that a real signup flow exists
+- [x] 4.7 Manually verify: reloading the page after authentication keeps the visitor signed in (no flash back to the landing view)
+- [x] 4.8 Revisit `db-layer-data-management` task 1.3 (same-`user_id` verification across providers) now that a real signup flow exists

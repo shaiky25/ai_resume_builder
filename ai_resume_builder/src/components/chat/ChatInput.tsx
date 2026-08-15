@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 interface ChatInputProps {
   disabled: boolean;
@@ -12,6 +12,8 @@ interface ChatInputProps {
   onStopRecording: () => void;
 }
 
+const MAX_TEXTAREA_HEIGHT_PX = 160;
+
 export function ChatInput({
   disabled,
   onSend,
@@ -22,19 +24,39 @@ export function ChatInput({
   onStopRecording,
 }: ChatInputProps) {
   const [value, setValue] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const resizeTextarea = (element: HTMLTextAreaElement) => {
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, MAX_TEXTAREA_HEIGHT_PX)}px`;
+  };
+
+  const submitMessage = () => {
     const text = value.trim();
     if (!text || disabled) return;
     onSend(text);
     setValue("");
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
+  };
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    submitMessage();
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submitMessage();
+    }
   };
 
   return (
     <form
       onSubmit={handleSubmit}
-      className="flex items-center gap-2 border-t border-zinc-200 px-4 py-3 dark:border-zinc-800"
+      className="flex items-end gap-2 px-4 py-3"
     >
       <button
         type="button"
@@ -55,18 +77,30 @@ export function ChatInput({
           type="button"
           onClick={isRecording ? onStopRecording : onStartRecording}
           disabled={disabled}
-          className="flex-1 rounded-full border border-zinc-300 px-4 py-2 text-left text-sm text-zinc-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300"
+          className={`flex flex-1 items-center gap-2 rounded-full border px-4 py-2 text-left text-sm text-zinc-600 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-300 ${
+            isRecording
+              ? "animate-recording-pulse border-red-400 dark:border-red-500"
+              : "border-zinc-300 dark:border-zinc-700"
+          }`}
         >
+          {isRecording && (
+            <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" aria-hidden="true" />
+          )}
           {isRecording ? "Recording… tap to stop" : "Tap to start recording"}
         </button>
       ) : (
-        <input
-          type="text"
+        <textarea
+          ref={textareaRef}
           value={value}
-          onChange={(event) => setValue(event.target.value)}
+          onChange={(event) => {
+            setValue(event.target.value);
+            resizeTextarea(event.target);
+          }}
+          onKeyDown={handleKeyDown}
           disabled={disabled}
+          rows={1}
           placeholder="Message your career coach…"
-          className="flex-1 rounded-full border border-zinc-300 px-4 py-2 text-sm text-zinc-900 outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50"
+          className="max-h-40 flex-1 resize-none overflow-y-auto rounded-2xl border border-zinc-300 px-4 py-2 text-sm text-zinc-900 outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-50"
         />
       )}
 

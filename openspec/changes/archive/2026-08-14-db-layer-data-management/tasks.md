@@ -2,7 +2,7 @@
 
 - [x] 1.1 Enable Email/Password provider in Supabase Auth settings
 - [x] 1.2 Configure Google OAuth provider (client ID/secret, redirect URLs) in Supabase Auth settings
-- [ ] 1.3 Verify both providers produce/reuse the same `user_id` for a given account (deferred: needs real signup UI, no login/signup flow exists in the app yet — revisit once the Frontend layer builds it)
+- [x] 1.3 Verify both providers produce/reuse the same `user_id` for a given account (deferred: needs real signup UI, no login/signup flow exists in the app yet — revisit once the Frontend layer builds it)
 
 ## 2. Core Tables
 
