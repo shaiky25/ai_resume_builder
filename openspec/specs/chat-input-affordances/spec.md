@@ -3,16 +3,19 @@
 ## Purpose
 
 Makes the chat input easier to start using and more responsive to what's typed or spoken, on top of the existing send-on-Enter/disabled-while-streaming input.
-
 ## Requirements
-
 ### Requirement: Suggested prompt chips appear before the first message
-The chat pane SHALL display a set of suggested prompts the visitor can select to start the conversation, before any message has been sent.
+The chat pane SHALL display a set of suggested prompts the visitor can select to start the conversation, before the visitor has sent any message, with chip copy varying according to the visitor's selected coaching persona.
 
 #### Scenario: Chips are shown in an empty conversation
-- **GIVEN** a conversation with no messages yet
+- **GIVEN** a conversation containing only the static persona-voiced greeting and no user-sent message yet
 - **WHEN** the chat pane renders
 - **THEN** suggested prompt chips are displayed
+
+#### Scenario: Chip copy matches the selected persona
+- **GIVEN** a visitor with a selected coaching persona
+- **WHEN** suggested prompt chips are displayed
+- **THEN** their copy reflects that persona's voice, differing from the copy shown to a visitor with a different selected persona
 
 #### Scenario: Selecting a chip sends it as a message
 - **GIVEN** suggested prompt chips are displayed
@@ -20,7 +23,7 @@ The chat pane SHALL display a set of suggested prompts the visitor can select to
 - **THEN** its text is sent as a message through the same send path as typed text
 
 #### Scenario: Chips are not shown once the conversation has started
-- **GIVEN** at least one message has been sent
+- **GIVEN** at least one message has been sent by the visitor
 - **WHEN** the chat pane renders
 - **THEN** suggested prompt chips are no longer displayed
 
@@ -47,3 +50,4 @@ The chat input SHALL show a visually distinct, animated state while voice record
 - **GIVEN** voice input mode is active
 - **WHEN** recording starts
 - **THEN** the input shows an animated recording indicator that stops when recording stops
+

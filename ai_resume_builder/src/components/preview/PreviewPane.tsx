@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import type { ResumeDraft } from "@/types/resume";
+import type { BaselineAssessment, ResumeDraft, TailoringStrategy } from "@/types/resume";
 import { CheckoutButton } from "@/components/payment/CheckoutButton";
+import { MatchInsights } from "@/components/insights/MatchInsights";
 import { ExportControls } from "./ExportControls";
 
 interface PreviewPaneProps {
@@ -10,6 +11,11 @@ interface PreviewPaneProps {
   isResumeReady: boolean;
   hasPremiumDownloadAccess: boolean;
   accessToken: string;
+  hasTargetJob: boolean;
+  baselineAssessment: BaselineAssessment | null;
+  tailoringStrategy: TailoringStrategy | null;
+  optimizationSatisfied: boolean;
+  exportRequested: boolean;
 }
 
 export function PreviewPane({
@@ -17,6 +23,11 @@ export function PreviewPane({
   isResumeReady,
   hasPremiumDownloadAccess,
   accessToken,
+  hasTargetJob,
+  baselineAssessment,
+  tailoringStrategy,
+  optimizationSatisfied,
+  exportRequested,
 }: PreviewPaneProps) {
   const [manuallyRevealed, setManuallyRevealed] = useState(false);
   const hasDraftContent =
@@ -26,20 +37,29 @@ export function PreviewPane({
     resumeDraft.experience.length > 0;
   const isBlurred = hasDraftContent && !isResumeReady && !manuallyRevealed;
 
+  // premium-download-gate (MODIFIED): ready-and-paid, plus, when a target
+  // job is set, satisfaction determination — OR an explicit as-built export
+  // request always overrides readiness/satisfaction (never payment).
+  const readyAndSatisfied = isResumeReady && (!hasTargetJob || optimizationSatisfied);
+  const canExport = hasPremiumDownloadAccess && (readyAndSatisfied || exportRequested);
+
   return (
-    <section className="flex h-full flex-1 flex-col">
+    <section className="flex h-full flex-1 flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
         <h2 className="text-sm font-medium text-zinc-600 dark:text-zinc-300">
           Resume Preview
         </h2>
         <div className="flex items-center gap-2">
           {!hasPremiumDownloadAccess && <CheckoutButton accessToken={accessToken} />}
-          <ExportControls
-            resumeDraft={resumeDraft}
-            disabled={!isResumeReady || !hasPremiumDownloadAccess}
-          />
+          <ExportControls resumeDraft={resumeDraft} disabled={!canExport} />
         </div>
       </div>
+
+      <MatchInsights
+        hasTargetJob={hasTargetJob}
+        baselineAssessment={baselineAssessment}
+        tailoringStrategy={tailoringStrategy}
+      />
 
       <div className="relative flex-1 overflow-y-auto p-6">
         {hasDraftContent ? (

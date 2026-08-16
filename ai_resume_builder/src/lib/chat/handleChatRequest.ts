@@ -7,12 +7,21 @@ import {
   type ResumeContext,
   type ResumeContextGateway,
 } from "./resumeContext";
+import { SupabaseProfileGateway, type ProfileGateway } from "./profileGateway";
 import { SupabaseUsageLogger, type UsageLogger } from "./usageLogger";
 import { AnthropicChatModelClient, type ChatModelClient, type ChatStream } from "./anthropicClient";
 import {
   AnthropicResumeExtractionModelClient,
   type ResumeExtractionModelClient,
 } from "./resumeExtraction";
+import {
+  AnthropicTailoringStrategyModelClient,
+  type TailoringStrategyModelClient,
+} from "./tailoringStrategy";
+import {
+  AnthropicSatisfactionSignalModelClient,
+  type SatisfactionSignalModelClient,
+} from "./satisfactionSignal";
 import { chatRateLimiter, type RateLimiter } from "./rateLimiter";
 import type { ChatApiRequestBody, ChatTurnInput } from "./types";
 
@@ -24,9 +33,12 @@ export interface ChatRequestDependencies {
   rateLimiter: RateLimiter;
   creditsGateway: CreditsGateway;
   resumeContextGateway: ResumeContextGateway;
+  profileGateway: ProfileGateway;
   usageLogger: UsageLogger;
   modelClient: ChatModelClient;
   resumeExtractionClient: ResumeExtractionModelClient;
+  tailoringStrategyClient: TailoringStrategyModelClient;
+  satisfactionSignalClient: SatisfactionSignalModelClient;
   generateRequestId: () => string;
 }
 
@@ -36,9 +48,12 @@ export function createDefaultDependencies(): ChatRequestDependencies {
     rateLimiter: chatRateLimiter,
     creditsGateway: new SupabaseCreditsGateway(),
     resumeContextGateway: new SupabaseResumeContextGateway(),
+    profileGateway: new SupabaseProfileGateway(),
     usageLogger: new SupabaseUsageLogger(),
     modelClient: new AnthropicChatModelClient(),
     resumeExtractionClient: new AnthropicResumeExtractionModelClient(),
+    tailoringStrategyClient: new AnthropicTailoringStrategyModelClient(),
+    satisfactionSignalClient: new AnthropicSatisfactionSignalModelClient(),
     generateRequestId: () => randomUUID(),
   };
 }
@@ -158,19 +173,26 @@ export async function handleChatRequest(
     await deps.creditsGateway.refund(user.id, requestId, CHAT_CREDIT_COST, reason);
   };
 
-  // 5. Fetch resume/LinkedIn context server-side, scoped to this user —
-  // never trust the client's request body for this.
+  // 5. Fetch resume/LinkedIn context and coach persona server-side, scoped
+  // to this user — never trust the client's request body for either. A
+  // client-supplied persona field, if present, is ignored: it is never read
+  // from `body`.
   let resumeContext: ResumeContext | null;
+  let coachPersona: Awaited<ReturnType<ProfileGateway["getCoachPersona"]>>;
   try {
-    resumeContext = await deps.resumeContextGateway.getLatestResumeContext(user.id);
+    [resumeContext, coachPersona] = await Promise.all([
+      deps.resumeContextGateway.getLatestResumeContext(user.id),
+      deps.profileGateway.getCoachPersona(user.id),
+    ]);
   } catch (err) {
-    console.error("Failed to fetch resume context", err);
+    console.error("Failed to fetch resume context or coach persona", err);
     await refund("context_fetch_failed");
     return jsonResponse(500, { error: "internal_error" });
   }
 
-  // 6. Compose the Master Prompt + context immediately before the Claude call.
-  const systemPrompt = composeSystemPrompt(resumeContext);
+  // 6. Compose the Master Prompt + context + persona tone-modifier
+  // immediately before the Claude call.
+  const systemPrompt = composeSystemPrompt(resumeContext, coachPersona);
 
   // 7. Open the Claude stream.
   let chatStream: ChatStream;
@@ -227,18 +249,84 @@ export async function handleChatRequest(
         // client already received (design.md decision 2). Both the
         // extraction call and the persistence step swallow their own
         // errors below rather than throwing.
+        const completedConversation: ChatTurnInput[] = [
+          ...history,
+          { role: "user", content: body.message },
+          { role: "assistant", content: assistantText },
+        ];
+
+        let structuredOutput: unknown = null;
         try {
-          const structuredOutput = await deps.resumeExtractionClient.extractResume([
-            ...history,
-            { role: "user", content: body.message },
-            { role: "assistant", content: assistantText },
-          ]);
+          structuredOutput = await deps.resumeExtractionClient.extractResume(
+            completedConversation
+          );
 
           if (structuredOutput) {
             await deps.resumeContextGateway.persistStructuredOutput(user.id, structuredOutput);
           }
         } catch (err) {
           console.error("Resume structured extraction failed", err, { requestId });
+        }
+
+        // 10. Tailoring-strategy derivation (resume-optimization-strategy),
+        // gated on the user having a target job set (3.1/3.11), piggybacked
+        // on this same post-turn hook. Baseline-before-rewrite sequencing
+        // (3.3): the first derivation after a target job is newly set/
+        // changed produces only the baseline assessment; rewrite guidance
+        // is deferred to the next turn once a baseline exists. Isolated
+        // from the chat response exactly like structured extraction above
+        // (3.10) — failures here never affect the user's delivered reply.
+        try {
+          const targetJob = resumeContext?.targetJob ?? null;
+          if (targetJob) {
+            const latestStructuredResume = structuredOutput ?? resumeContext?.structuredOutput ?? null;
+            const hasBaseline = Boolean(resumeContext?.baselineAssessment);
+
+            if (!hasBaseline) {
+              const baselineAssessment = await deps.tailoringStrategyClient.deriveBaselineAssessment(
+                targetJob,
+                latestStructuredResume
+              );
+              if (baselineAssessment) {
+                await deps.resumeContextGateway.persistBaselineAssessment(
+                  user.id,
+                  baselineAssessment
+                );
+              }
+            } else {
+              const tailoringStrategy = await deps.tailoringStrategyClient.deriveTailoringStrategy(
+                targetJob,
+                latestStructuredResume
+              );
+              if (tailoringStrategy) {
+                await deps.resumeContextGateway.persistTailoringStrategy(
+                  user.id,
+                  tailoringStrategy
+                );
+              }
+            }
+          }
+        } catch (err) {
+          console.error("Tailoring strategy derivation failed", err, { requestId });
+        }
+
+        // 11. Satisfaction/export-request signal (3.14/3.15), classified
+        // from this turn regardless of target job state (the explicit
+        // as-built export override applies with or without one). Same
+        // failure-isolation guarantee as above.
+        try {
+          const signal = await deps.satisfactionSignalClient.deriveSatisfactionSignal(
+            completedConversation
+          );
+          if (signal && (signal.explicitExportRequested || signal.satisfiedFromReadiness)) {
+            await deps.resumeContextGateway.persistSatisfactionSignal(user.id, {
+              optimizationSatisfied:
+                signal.satisfiedFromReadiness || signal.explicitExportRequested,
+              exportRequested: signal.explicitExportRequested,
+            });
+          }
+        } catch (err) {
+          console.error("Satisfaction signal derivation failed", err, { requestId });
         }
       } catch (err) {
         console.error("Claude stream failed", err);

@@ -13,7 +13,7 @@ export const RESUME_EXTRACTION_TOOL_NAME = "record_resume_fields";
 export const RESUME_EXTRACTION_TOOL = {
   name: RESUME_EXTRACTION_TOOL_NAME,
   description:
-    "Records the resume-relevant fields extracted from the conversation so far. Rewrite and organize what the user said into proper resume language — never copy the user's raw chat text verbatim into a field. If a field genuinely isn't known yet from the conversation, use an empty string or empty array for it; never use a placeholder word like 'unknown' or 'N/A'.",
+    "Records the resume-relevant fields extracted from the conversation so far. Rewrite and organize what the user said into proper resume language — never copy the user's raw chat text verbatim into a field. If a field genuinely isn't known yet from the conversation, use an empty string or empty array for it; never use a placeholder word like 'unknown' or 'N/A'. If the assistant proposed tailoring/rewrite changes in the conversation, only fold them into these fields once the user has explicitly agreed to apply them — a proposal the user hasn't yet confirmed must not change these fields (resume-optimization-strategy: confirm-before-apply).",
   input_schema: {
     type: "object" as const,
     properties: {

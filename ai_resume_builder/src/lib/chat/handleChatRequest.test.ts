@@ -6,6 +6,7 @@ import {
 } from "./handleChatRequest";
 import type { CreditsGateway, ReserveResult } from "./credits";
 import type { ResumeContextGateway, ResumeContext } from "./resumeContext";
+import type { ProfileGateway } from "./profileGateway";
 import type { LogSuccessParams, UsageLogger } from "./usageLogger";
 import type {
   ChatModelClient,
@@ -14,10 +15,13 @@ import type {
   StreamChatParams,
 } from "./anthropicClient";
 import type { ResumeExtractionModelClient } from "./resumeExtraction";
+import type { TailoringStrategyModelClient } from "./tailoringStrategy";
+import type { SatisfactionSignalModelClient } from "./satisfactionSignal";
 import type { ChatTurnInput } from "./types";
 import type { RateLimiter } from "./rateLimiter";
 import type { AuthenticatedUser } from "@/lib/supabase/serverClient";
 import type { ResumeDraft } from "@/types/resume";
+import type { CoachPersona } from "@/types/chat";
 
 const VALID_AUTH_HEADER = "Bearer valid-token";
 const USER_ID = "user-1";
@@ -91,12 +95,65 @@ function createFakeCreditsGateway(initialBalances: Record<string, number>) {
  */
 function createFakeResumeContextGateway(context: ResumeContext | null = null) {
   const persisted = new Map<string, unknown>();
+  const persistedBaselineAssessments = new Map<string, unknown>();
+  const persistedTailoringStrategies = new Map<string, unknown>();
+  const persistedSatisfactionSignals = new Map<
+    string,
+    { optimizationSatisfied?: boolean; exportRequested?: boolean }
+  >();
   const getLatestResumeContext = vi.fn(async (): Promise<ResumeContext | null> => context);
   const persistStructuredOutput = vi.fn(async (userId: string, structuredOutput: unknown) => {
     persisted.set(userId, structuredOutput);
   });
-  const gateway: ResumeContextGateway = { getLatestResumeContext, persistStructuredOutput };
-  return { gateway, persisted };
+  const persistBaselineAssessment = vi.fn(async (userId: string, baselineAssessment: unknown) => {
+    persistedBaselineAssessments.set(userId, baselineAssessment);
+  });
+  const persistTailoringStrategy = vi.fn(async (userId: string, tailoringStrategy: unknown) => {
+    persistedTailoringStrategies.set(userId, tailoringStrategy);
+  });
+  const persistSatisfactionSignal = vi.fn(
+    async (
+      userId: string,
+      signal: { optimizationSatisfied?: boolean; exportRequested?: boolean }
+    ) => {
+      persistedSatisfactionSignals.set(userId, signal);
+    }
+  );
+  const gateway: ResumeContextGateway = {
+    getLatestResumeContext,
+    persistStructuredOutput,
+    persistBaselineAssessment,
+    persistTailoringStrategy,
+    persistSatisfactionSignal,
+  };
+  return {
+    gateway,
+    persisted,
+    persistedBaselineAssessments,
+    persistedTailoringStrategies,
+    persistedSatisfactionSignals,
+  };
+}
+
+function createFakeProfileGateway(coachPersona: CoachPersona | null = null) {
+  const getCoachPersona = vi.fn(async (): Promise<CoachPersona | null> => coachPersona);
+  const gateway: ProfileGateway = { getCoachPersona };
+  return gateway;
+}
+
+function createFakeTailoringStrategyClient() {
+  const client: TailoringStrategyModelClient = {
+    deriveBaselineAssessment: vi.fn(async () => null),
+    deriveTailoringStrategy: vi.fn(async () => null),
+  };
+  return client;
+}
+
+function createFakeSatisfactionSignalClient() {
+  const client: SatisfactionSignalModelClient = {
+    deriveSatisfactionSignal: vi.fn(async () => null),
+  };
+  return client;
 }
 
 interface FakeResumeExtractionClientOptions {
@@ -213,9 +270,12 @@ function buildDeps(overrides: Partial<ChatRequestDependencies>): ChatRequestDepe
     rateLimiter: createFakeRateLimiter(true),
     creditsGateway: createFakeCreditsGateway({ [USER_ID]: 5 }).gateway,
     resumeContextGateway: createFakeResumeContextGateway(null).gateway,
+    profileGateway: createFakeProfileGateway(null),
     usageLogger: createFakeUsageLogger().logger,
     modelClient: createFakeModelClient().client,
     resumeExtractionClient: createFakeResumeExtractionClient().client,
+    tailoringStrategyClient: createFakeTailoringStrategyClient(),
+    satisfactionSignalClient: createFakeSatisfactionSignalClient(),
     generateRequestId: () => `req-${counter++}`,
     ...overrides,
   };
@@ -448,5 +508,219 @@ describe("handleChatRequest", () => {
     expect(persisted.get("user-a")).not.toEqual(userBResume);
     expect(persisted.get("user-b")).not.toEqual(userAResume);
     expect(persisted.size).toBe(2);
+  });
+
+  // 3.1/3.11 — tailoring-strategy derivation is skipped entirely when the
+  // user has no target job set
+  it("does not derive a tailoring strategy when no target job is set", async () => {
+    const { gateway: resumeContextGateway } = createFakeResumeContextGateway(null);
+    const tailoringStrategyClient = createFakeTailoringStrategyClient();
+
+    const deps = buildDeps({ resumeContextGateway, tailoringStrategyClient });
+
+    const response = await handleChatRequest(makeRequest(), deps);
+    await readBodyToText(response);
+
+    await vi.waitFor(() => {
+      expect(tailoringStrategyClient.deriveBaselineAssessment).not.toHaveBeenCalled();
+    });
+    expect(tailoringStrategyClient.deriveTailoringStrategy).not.toHaveBeenCalled();
+  });
+
+  // 3.3 — baseline assessment is derived first when a target job is set but
+  // no baseline exists yet, and rewrite guidance is deferred that turn
+  it("derives only the baseline assessment when a target job is newly set", async () => {
+    const context: ResumeContext = {
+      rawText: null,
+      structuredOutput: { name: "Jordan" },
+      targetJob: { title: "Backend Engineer", company: "Acme", description: "Build APIs." },
+      baselineAssessment: null,
+      tailoringStrategy: null,
+    };
+    const { gateway: resumeContextGateway, persistedBaselineAssessments } =
+      createFakeResumeContextGateway(context);
+    const tailoringStrategyClient = createFakeTailoringStrategyClient();
+    (tailoringStrategyClient.deriveBaselineAssessment as ReturnType<typeof vi.fn>).mockResolvedValue({
+      matchScore: 60,
+      missingKeywords: ["Kubernetes"],
+      redFlags: ["Unquantified bullet"],
+    });
+
+    const deps = buildDeps({ resumeContextGateway, tailoringStrategyClient });
+
+    const response = await handleChatRequest(makeRequest(), deps);
+    await readBodyToText(response);
+
+    await vi.waitFor(() => {
+      expect(persistedBaselineAssessments.get(USER_ID)).toEqual({
+        matchScore: 60,
+        missingKeywords: ["Kubernetes"],
+        redFlags: ["Unquantified bullet"],
+      });
+    });
+    expect(tailoringStrategyClient.deriveTailoringStrategy).not.toHaveBeenCalled();
+  });
+
+  // 3.1 — once a baseline exists, subsequent turns derive the full
+  // tailoring strategy instead
+  it("derives the tailoring strategy once a baseline assessment already exists", async () => {
+    const context: ResumeContext = {
+      rawText: null,
+      structuredOutput: { name: "Jordan" },
+      targetJob: { title: "Backend Engineer", company: "Acme", description: "Build APIs." },
+      baselineAssessment: { matchScore: 60, missingKeywords: [], redFlags: [] },
+      tailoringStrategy: null,
+    };
+    const { gateway: resumeContextGateway, persistedTailoringStrategies } =
+      createFakeResumeContextGateway(context);
+    const tailoringStrategyClient = createFakeTailoringStrategyClient();
+    (tailoringStrategyClient.deriveTailoringStrategy as ReturnType<typeof vi.fn>).mockResolvedValue({
+      lowRelevance: false,
+      matchedKeywords: ["APIs"],
+      missingKeywords: [],
+      prioritizedGaps: [],
+      rewriteGuidance: ["Ship APIs, measured by uptime, via on-call rotation."],
+    });
+
+    const deps = buildDeps({ resumeContextGateway, tailoringStrategyClient });
+
+    const response = await handleChatRequest(makeRequest(), deps);
+    await readBodyToText(response);
+
+    await vi.waitFor(() => {
+      expect(persistedTailoringStrategies.get(USER_ID)).toBeDefined();
+    });
+    expect(tailoringStrategyClient.deriveBaselineAssessment).not.toHaveBeenCalled();
+  });
+
+  // 3.10 — a tailoring-strategy derivation failure never alters the
+  // already-delivered chat response
+  it("does not alter the delivered chat response when tailoring strategy derivation fails", async () => {
+    const context: ResumeContext = {
+      rawText: null,
+      structuredOutput: { name: "Jordan" },
+      targetJob: { title: "Backend Engineer", company: "Acme", description: "Build APIs." },
+      baselineAssessment: { matchScore: 60, missingKeywords: [], redFlags: [] },
+      tailoringStrategy: null,
+    };
+    const { gateway: resumeContextGateway } = createFakeResumeContextGateway(context);
+    const tailoringStrategyClient: TailoringStrategyModelClient = {
+      deriveBaselineAssessment: vi.fn(async () => null),
+      deriveTailoringStrategy: vi.fn(async () => {
+        throw new Error("simulated derivation failure");
+      }),
+    };
+
+    const deps = buildDeps({ resumeContextGateway, tailoringStrategyClient });
+
+    const response = await handleChatRequest(makeRequest(), deps);
+    expect(response.status).toBe(200);
+
+    const bodyText = await readBodyToText(response);
+    expect(bodyText).toContain("event: done");
+    expect(bodyText).not.toContain("event: error");
+
+    await vi.waitFor(() => {
+      expect(tailoringStrategyClient.deriveTailoringStrategy).toHaveBeenCalled();
+    });
+  });
+
+  // 7.2 — the target job description and tailoring strategy never leak into
+  // the client-visible SSE response, same secrecy guarantee as the Master
+  // Prompt itself (the composed system prompt is only ever handed to
+  // deps.modelClient.streamChat, never serialized into the response body).
+  it("never includes the target job description or tailoring strategy in the response body", async () => {
+    const context: ResumeContext = {
+      rawText: null,
+      structuredOutput: { name: "Jordan" },
+      targetJob: {
+        title: "Backend Engineer",
+        company: "Acme",
+        description: "SECRET_JOB_DESCRIPTION_TEXT",
+      },
+      baselineAssessment: { matchScore: 60, missingKeywords: [], redFlags: [] },
+      tailoringStrategy: {
+        lowRelevance: false,
+        matchedKeywords: [],
+        missingKeywords: [],
+        prioritizedGaps: [],
+        rewriteGuidance: ["SECRET_REWRITE_GUIDANCE_TEXT"],
+      },
+    };
+    const { gateway: resumeContextGateway } = createFakeResumeContextGateway(context);
+
+    const deps = buildDeps({ resumeContextGateway });
+
+    const response = await handleChatRequest(makeRequest(), deps);
+    const bodyText = await readBodyToText(response);
+
+    expect(bodyText).not.toContain("SECRET_JOB_DESCRIPTION_TEXT");
+    expect(bodyText).not.toContain("SECRET_REWRITE_GUIDANCE_TEXT");
+  });
+
+  // 3.14/3.15 — an explicit export request persists both the export-request
+  // and satisfaction flags
+  it("persists export-requested and satisfaction flags when the user explicitly asks to export", async () => {
+    const { gateway: resumeContextGateway, persistedSatisfactionSignals } =
+      createFakeResumeContextGateway(null);
+    const satisfactionSignalClient: SatisfactionSignalModelClient = {
+      deriveSatisfactionSignal: vi.fn(async () => ({
+        explicitExportRequested: true,
+        satisfiedFromReadiness: false,
+      })),
+    };
+
+    const deps = buildDeps({ resumeContextGateway, satisfactionSignalClient });
+
+    const response = await handleChatRequest(makeRequest(), deps);
+    await readBodyToText(response);
+
+    await vi.waitFor(() => {
+      expect(persistedSatisfactionSignals.get(USER_ID)).toEqual({
+        optimizationSatisfied: true,
+        exportRequested: true,
+      });
+    });
+  });
+
+  // 6.4 (coach-persona-onboarding) — the composed prompt reflects the
+  // server-fetched coach_persona, and a client-supplied persona value in
+  // the request body has no effect on it whatsoever.
+  it("composes the prompt from the server-fetched coach_persona, ignoring any persona value in the request body", async () => {
+    const profileGateway = createFakeProfileGateway("bold");
+    const { client: modelClient, calls: modelCalls } = createFakeModelClient();
+
+    const deps = buildDeps({ profileGateway, modelClient });
+
+    const response = await handleChatRequest(
+      makeRequest({
+        body: {
+          message: "Help me rewrite this bullet point.",
+          coach_persona: "steady",
+        },
+      }),
+      deps
+    );
+    await readBodyToText(response);
+
+    expect(profileGateway.getCoachPersona).toHaveBeenCalledWith(USER_ID);
+    expect(modelCalls).toHaveLength(1);
+    expect(modelCalls[0]?.systemPrompt).toContain("Coaching style: Bold");
+    expect(modelCalls[0]?.systemPrompt).not.toContain("Coaching style: Steady");
+  });
+
+  // 2.4 — a null coach_persona (mid-onboarding or pre-migration) composes
+  // the prompt with no tone-modifier block and no error.
+  it("composes the prompt with no tone-modifier block when coach_persona is null", async () => {
+    const profileGateway = createFakeProfileGateway(null);
+    const { client: modelClient, calls: modelCalls } = createFakeModelClient();
+
+    const deps = buildDeps({ profileGateway, modelClient });
+
+    const response = await handleChatRequest(makeRequest(), deps);
+    expect(response.status).toBe(200);
+    await readBodyToText(response);
+
+    expect(modelCalls[0]?.systemPrompt).not.toContain("Coaching style:");
   });
 });

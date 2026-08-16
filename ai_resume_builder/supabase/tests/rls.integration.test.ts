@@ -95,6 +95,55 @@ describe.skipIf(!hasLiveSupabaseEnv)("db-layer RLS boundaries", () => {
         .single();
       expect(granted?.has_premium_download_access).toBe(true);
     });
+
+    // 1.2/1.3 (coach-persona-onboarding) — owner-scoped read/write on
+    // coach_persona, and the check constraint rejects any out-of-set value
+    // (including via the service-role key, which bypasses RLS but not a
+    // column check constraint) while still accepting null (unset state).
+    it("owner can set their own coach_persona to a valid value", async () => {
+      const { error } = await userA.client
+        .from("profiles")
+        .update({ coach_persona: "momentum" })
+        .eq("user_id", userA.id);
+      expect(error).toBeNull();
+
+      const { data } = await userA.client
+        .from("profiles")
+        .select("coach_persona")
+        .eq("user_id", userA.id)
+        .single();
+      expect(data?.coach_persona).toBe("momentum");
+    });
+
+    it("user cannot write another user's coach_persona", async () => {
+      const { data: writeAttempt } = await userA.client
+        .from("profiles")
+        .update({ coach_persona: "bold" })
+        .eq("user_id", userB.id)
+        .select();
+      expect(writeAttempt).toEqual([]);
+    });
+
+    it("database rejects an out-of-set coach_persona value, but accepts null", async () => {
+      const { error: invalidError } = await service
+        .from("profiles")
+        .update({ coach_persona: "chaotic" })
+        .eq("user_id", userA.id);
+      expect(invalidError).not.toBeNull();
+
+      const { error: nullError } = await service
+        .from("profiles")
+        .update({ coach_persona: null })
+        .eq("user_id", userA.id);
+      expect(nullError).toBeNull();
+
+      const { data } = await service
+        .from("profiles")
+        .select("coach_persona")
+        .eq("user_id", userA.id)
+        .single();
+      expect(data?.coach_persona).toBeNull();
+    });
   });
 
   describe("user_credits", () => {
@@ -173,6 +222,51 @@ describe.skipIf(!hasLiveSupabaseEnv)("db-layer RLS boundaries", () => {
       const { data: writeAttempt } = await userA.client
         .from("resumes")
         .update({ raw_text: "hijacked" })
+        .eq("id", bResume!.id)
+        .select();
+      expect(writeAttempt).toEqual([]);
+    });
+
+    // 7.1 (resume-optimization-strategy) — owner-scoped access extends to
+    // the target-job/tailoring-strategy columns too, since they're new
+    // columns on the same RLS-protected `resumes` table.
+    it("owner can insert and read their own target job and tailoring strategy", async () => {
+      const { data: inserted, error: insertError } = await userA.client
+        .from("resumes")
+        .insert({
+          user_id: userA.id,
+          target_job_title: "Backend Engineer",
+          target_job_company: "Acme",
+          target_job_description: "Build scalable APIs.",
+          tailoring_strategy: { matchedKeywords: ["APIs"] },
+        })
+        .select()
+        .single();
+      expect(insertError).toBeNull();
+      expect(inserted?.target_job_title).toBe("Backend Engineer");
+    });
+
+    it("user cannot read or write another user's target job or tailoring strategy", async () => {
+      const { data: bResume } = await service
+        .from("resumes")
+        .insert({
+          user_id: userB.id,
+          target_job_title: "Data Analyst",
+          target_job_description: "Analyze data.",
+          tailoring_strategy: { matchedKeywords: ["SQL"] },
+        })
+        .select()
+        .single();
+
+      const { data: readAttempt } = await userA.client
+        .from("resumes")
+        .select("target_job_title, tailoring_strategy")
+        .eq("id", bResume!.id);
+      expect(readAttempt).toEqual([]);
+
+      const { data: writeAttempt } = await userA.client
+        .from("resumes")
+        .update({ target_job_title: "hijacked" })
         .eq("id", bResume!.id)
         .select();
       expect(writeAttempt).toEqual([]);

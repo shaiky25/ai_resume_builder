@@ -1,9 +1,9 @@
 ## MODIFIED Requirements
 
-### Requirement: Suggested prompt chips appear before the first user message, in the selected persona's voice
+### Requirement: Suggested prompt chips appear before the first message
 The chat pane SHALL display a set of suggested prompts the visitor can select to start the conversation, before the visitor has sent any message, with chip copy varying according to the visitor's selected coaching persona.
 
-#### Scenario: Chips are shown after the persona greeting, before a user message
+#### Scenario: Chips are shown in an empty conversation
 - **GIVEN** a conversation containing only the static persona-voiced greeting and no user-sent message yet
 - **WHEN** the chat pane renders
 - **THEN** suggested prompt chips are displayed

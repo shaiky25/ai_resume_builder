@@ -1,15 +1,21 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatPane } from "@/components/chat/ChatPane";
 import { PreviewPane } from "@/components/preview/PreviewPane";
+import { PersonaPicker } from "@/components/persona/PersonaPicker";
 import { useAuthSession } from "@/components/auth/AuthProvider";
 import { useVoiceInput } from "@/hooks/useVoiceInput";
 import { useResumeDraft } from "@/hooks/useResumeDraft";
 import { usePremiumDownloadAccess } from "@/hooks/usePremiumDownloadAccess";
+import { useTargetJob } from "@/hooks/useTargetJob";
+import { useTailoringInsights } from "@/hooks/useTailoringInsights";
+import { useCoachPersona } from "@/hooks/useCoachPersona";
+import { TargetJobForm } from "@/components/target-job/TargetJobForm";
 import { getBrowserClient } from "@/lib/supabase/browserClient";
 import { streamChatMessage } from "@/lib/chat/chatClient";
-import type { ChatMessage, ChatStreamError } from "@/types/chat";
+import { PERSONA_GREETINGS, PERSONA_SUGGESTED_PROMPTS } from "@/lib/chat/personaContent";
+import type { ChatMessage, ChatStreamError, CoachPersona } from "@/types/chat";
 
 export function ChatExperience() {
   const { user, session } = useAuthSession();
@@ -17,9 +23,52 @@ export function ChatExperience() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isAudioInput, setIsAudioInput] = useState(false);
   const [chatError, setChatError] = useState<ChatStreamError | null>(null);
+  const [isChangingPersona, setIsChangingPersona] = useState(false);
 
   const { resumeDraft, isResumeReady } = useResumeDraft(user?.id ?? null);
   const hasPremiumDownloadAccess = usePremiumDownloadAccess(user?.id ?? null);
+  const { targetJob, isSubmitting: isSubmittingTargetJob, submitTargetJob } = useTargetJob(
+    user?.id ?? null
+  );
+  const {
+    hasTargetJob,
+    baselineAssessment,
+    tailoringStrategy,
+    optimizationSatisfied,
+    exportRequested,
+  } = useTailoringInsights(user?.id ?? null);
+  const { coachPersona, setCoachPersona } = useCoachPersona(user?.id ?? null);
+
+  // coach-persona-onboarding 4.3: seed the static, persona-voiced greeting
+  // as the first message the moment a persona is available and the
+  // conversation is still empty — covers both a fresh selection on the
+  // picker and a returning user with a stored persona opening a new
+  // conversation. No model call, no credit reservation. Guarded on
+  // `messages.length` so changing style later (via the header affordance,
+  // mid-conversation) never re-seeds or duplicates the greeting.
+  const greetingSeededForRef = useRef<CoachPersona | null>(null);
+  useEffect(() => {
+    if (!coachPersona) return;
+    if (messages.length > 0) return;
+    if (greetingSeededForRef.current === coachPersona) return;
+    greetingSeededForRef.current = coachPersona;
+    setMessages([
+      {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        text: PERSONA_GREETINGS[coachPersona],
+        createdAt: Date.now(),
+      },
+    ]);
+  }, [coachPersona, messages.length]);
+
+  const handlePersonaSelect = useCallback(
+    async (persona: CoachPersona) => {
+      await setCoachPersona(persona);
+      setIsChangingPersona(false);
+    },
+    [setCoachPersona]
+  );
 
   // Single send path (proposal.md / design.md): typed text and
   // voice-transcribed text both normalize to plain text before calling this.
@@ -92,11 +141,47 @@ export function ChatExperience() {
   // branching downstream of input capture.
   const voice = useVoiceInput(sendMessage);
 
+  // coach-persona-onboarding: block the chat surface entirely until the
+  // user has a stored persona. `coachPersona === undefined` is the initial
+  // fetch still in flight — render nothing rather than flashing the picker.
+  if (coachPersona === undefined) {
+    return null;
+  }
+
+  if (coachPersona === null) {
+    return <PersonaPicker onSelect={handlePersonaSelect} />;
+  }
+
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
+      {isChangingPersona && (
+        <div className="fixed inset-0 z-50 flex flex-col bg-white/95 backdrop-blur-sm dark:bg-zinc-950/95">
+          <div className="flex justify-end px-4 pt-4">
+            <button
+              type="button"
+              onClick={() => setIsChangingPersona(false)}
+              className="rounded-full border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-900 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-800"
+            >
+              Cancel
+            </button>
+          </div>
+          <PersonaPicker
+            onSelect={handlePersonaSelect}
+            title="Change your coaching style"
+            description="Future responses will reflect the new style right away."
+          />
+        </div>
+      )}
       <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-2 text-sm text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">
         <span className="font-medium text-zinc-900 dark:text-zinc-50">AI Resume Builder</span>
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setIsChangingPersona(true)}
+            className="rounded-full border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-900 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-50 dark:hover:bg-zinc-800"
+          >
+            Change coaching style
+          </button>
           <span>{user?.email}</span>
         <button
           type="button"
@@ -107,6 +192,11 @@ export function ChatExperience() {
         </button>
         </div>
       </div>
+      <TargetJobForm
+        targetJob={targetJob}
+        isSubmitting={isSubmittingTargetJob}
+        onSubmit={submitTargetJob}
+      />
       <div className="flex flex-1 overflow-hidden">
         <ChatPane
           messages={messages}
@@ -118,12 +208,18 @@ export function ChatExperience() {
           onStartRecording={voice.start}
           onStopRecording={voice.stop}
           chatError={chatError}
+          suggestedPrompts={PERSONA_SUGGESTED_PROMPTS[coachPersona]}
         />
         <PreviewPane
           resumeDraft={resumeDraft}
           isResumeReady={isResumeReady}
           hasPremiumDownloadAccess={hasPremiumDownloadAccess}
           accessToken={session?.access_token ?? ""}
+          hasTargetJob={hasTargetJob}
+          baselineAssessment={baselineAssessment}
+          tailoringStrategy={tailoringStrategy}
+          optimizationSatisfied={optimizationSatisfied}
+          exportRequested={exportRequested}
         />
       </div>
     </div>
