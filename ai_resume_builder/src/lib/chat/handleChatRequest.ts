@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { verifyRequestUser, type AuthenticatedUser } from "@/lib/supabase/serverClient";
 import { composeSystemPrompt } from "./promptComposer";
+import { IMPACT_WRITER_MASTER_PROMPT } from "./masterPrompt";
 import { SupabaseCreditsGateway, type CreditsGateway, type ReserveResult } from "./credits";
 import {
   SupabaseResumeContextGateway,
@@ -28,6 +29,18 @@ import type { ChatApiRequestBody, ChatTurnInput } from "./types";
 /** Flat per-request credit cost. One chat message costs one credit. */
 export const CHAT_CREDIT_COST = 1;
 
+/**
+ * Input-size bounds (chat-input-bounds). Sized generously above realistic
+ * legitimate usage (a long resume paste or a long multi-turn session) so no
+ * legitimate client ever hits them, while still closing off
+ * injection-by-volume and single-request cost-abuse vectors. Enforced
+ * immediately after body parsing, before the credit-gate read or any Claude
+ * call.
+ */
+export const MAX_MESSAGE_LENGTH = 20_000;
+export const MAX_HISTORY_ENTRIES = 200;
+export const MAX_HISTORY_ENTRY_LENGTH = 20_000;
+
 export interface ChatRequestDependencies {
   verifyUser: (authHeader: string | null) => Promise<AuthenticatedUser | null>;
   rateLimiter: RateLimiter;
@@ -39,6 +52,7 @@ export interface ChatRequestDependencies {
   resumeExtractionClient: ResumeExtractionModelClient;
   tailoringStrategyClient: TailoringStrategyModelClient;
   satisfactionSignalClient: SatisfactionSignalModelClient;
+  abuseSignalDetector: AbuseSignalDetector;
   generateRequestId: () => string;
 }
 
@@ -54,6 +68,7 @@ export function createDefaultDependencies(): ChatRequestDependencies {
     resumeExtractionClient: new AnthropicResumeExtractionModelClient(),
     tailoringStrategyClient: new AnthropicTailoringStrategyModelClient(),
     satisfactionSignalClient: new AnthropicSatisfactionSignalModelClient(),
+    abuseSignalDetector: new DeterministicAbuseSignalDetector(),
     generateRequestId: () => randomUUID(),
   };
 }
@@ -74,6 +89,81 @@ function isValidHistoryTurn(value: unknown): value is ChatTurnInput {
     (candidate.role === "user" || candidate.role === "assistant") &&
     typeof candidate.content === "string"
   );
+}
+
+/**
+ * Minimum contiguous-substring length (characters) that counts as a
+ * verbatim Master Prompt leak (chat-abuse-signal-logging). Above this length
+ * a match is confidently not coincidental phrasing; an implementation-time
+ * tuning value, not a hard requirement.
+ */
+const ABUSE_MASTER_PROMPT_MATCH_MIN_LENGTH = 40;
+
+/**
+ * Small fixed set of explicit role-change/instruction-disclosure phrasings
+ * (chat-abuse-signal-logging) — deliberately narrow and deterministic
+ * rather than a classifier; see design.md Decision 4.
+ */
+const ABUSE_DISCLOSURE_PHRASES: readonly string[] = [
+  "here are my instructions",
+  "here is my system prompt",
+  "my system prompt is",
+  "i am not the impact-writer",
+  "i will ignore my previous instructions",
+  "i am no longer bound by my instructions",
+  "i am not a resume-writing assistant",
+];
+
+export type AbuseSignalType = "master_prompt_leak" | "disclosure_phrase";
+
+export interface AbuseSignal {
+  type: AbuseSignalType;
+  matched: string;
+}
+
+/**
+ * Deterministic, non-blocking detection of likely prompt-leak or
+ * scope-jailbreak signals in the assistant's completed response
+ * (chat-abuse-signal-logging). Pure/synchronous — callers are responsible
+ * for the "never affects the delivered response" guarantee by only ever
+ * logging the result, never using it to alter control flow.
+ */
+export function detectAbuseSignal(assistantText: string): AbuseSignal | null {
+  const lower = assistantText.toLowerCase();
+  for (const phrase of ABUSE_DISCLOSURE_PHRASES) {
+    if (lower.includes(phrase)) {
+      return { type: "disclosure_phrase", matched: phrase };
+    }
+  }
+
+  const windowSize = ABUSE_MASTER_PROMPT_MATCH_MIN_LENGTH;
+  if (assistantText.length >= windowSize) {
+    for (let i = 0; i <= IMPACT_WRITER_MASTER_PROMPT.length - windowSize; i++) {
+      const window = IMPACT_WRITER_MASTER_PROMPT.slice(i, i + windowSize);
+      if (assistantText.includes(window)) {
+        return { type: "master_prompt_leak", matched: window };
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Injectable seam around `detectAbuseSignal` (same DI pattern used for
+ * every other post-turn derivation below — resumeExtractionClient,
+ * tailoringStrategyClient, satisfactionSignalClient) so a forced failure in
+ * the check itself can be exercised in tests without monkey-patching module
+ * internals.
+ */
+export interface AbuseSignalDetector {
+  detect(assistantText: string): AbuseSignal | null;
+}
+
+export class DeterministicAbuseSignalDetector implements AbuseSignalDetector {
+  detect(assistantText: string): AbuseSignal | null {
+    return detectAbuseSignal(assistantText);
+  }
 }
 
 /**
@@ -120,9 +210,33 @@ export async function handleChatRequest(
     });
   }
 
-  const history: ChatTurnInput[] = Array.isArray(body.history)
-    ? body.history.filter(isValidHistoryTurn)
-    : [];
+  // 2b. Input-size bounds (chat-input-bounds) — rejected before the
+  // credit-gate read, credit reservation, or any Claude call, so oversized
+  // input never costs the user a credit or opens a Claude connection.
+  if (body.message.length > MAX_MESSAGE_LENGTH) {
+    return jsonResponse(400, {
+      error: "message_too_long",
+      message: `\`message\` must be ${MAX_MESSAGE_LENGTH} characters or fewer`,
+    });
+  }
+
+  const rawHistory: unknown[] = Array.isArray(body.history) ? body.history : [];
+  if (rawHistory.length > MAX_HISTORY_ENTRIES) {
+    return jsonResponse(400, {
+      error: "history_too_large",
+      message: `\`history\` must contain ${MAX_HISTORY_ENTRIES} entries or fewer`,
+    });
+  }
+  for (const turn of rawHistory) {
+    if (isValidHistoryTurn(turn) && turn.content.length > MAX_HISTORY_ENTRY_LENGTH) {
+      return jsonResponse(400, {
+        error: "history_too_large",
+        message: `each \`history\` entry must be ${MAX_HISTORY_ENTRY_LENGTH} characters or fewer`,
+      });
+    }
+  }
+
+  const history: ChatTurnInput[] = rawHistory.filter(isValidHistoryTurn);
 
   // 3. Hard credit gate — read balance; insufficient balance short-circuits
   // with a distinguishable 403, no Claude call, no balance mutation.
@@ -327,6 +441,26 @@ export async function handleChatRequest(
           }
         } catch (err) {
           console.error("Satisfaction signal derivation failed", err, { requestId });
+        }
+
+        // 12. Abuse-signal detection (chat-abuse-signal-logging), run once
+        // assistantText is fully assembled and after `event: done` has
+        // already been queued — same placement/failure-isolation guarantee
+        // as extraction/tailoring/satisfaction-signal above. Detection is
+        // observability-only: it never alters, delays, or blocks the
+        // response already delivered to the client, and a failure inside
+        // the check itself is caught and logged, never surfaced to the
+        // client.
+        try {
+          const abuseSignal = deps.abuseSignalDetector.detect(assistantText);
+          if (abuseSignal) {
+            console.error("Potential prompt-leak or scope-jailbreak signal detected", {
+              requestId,
+              signalType: abuseSignal.type,
+            });
+          }
+        } catch (err) {
+          console.error("Abuse-signal detection check failed", err, { requestId });
         }
       } catch (err) {
         console.error("Claude stream failed", err);
