@@ -35,3 +35,9 @@
 - [ ] 5.1 Compare `usageLogger`-recorded input/output token counts per turn before and after this change, confirming a measurable reduction
 - [ ] 5.2 Regression pass: existing `handleChatRequest.test.ts` and related extraction tests still pass
 - [ ] 5.3 Manual end-to-end pass: a multi-turn conversation still produces a correct, live-updating resume preview under the new model/caching/extraction behavior
+
+## 6. Post-Launch Extraction-Quality Monitoring
+
+- [ ] 6.1 Add a lightweight signal for degraded extraction output (e.g. empty/near-empty `structured_output` written after a turn that clearly contained resume-relevant content) recorded alongside the existing `usageLogger` per-turn logging
+- [ ] 6.2 Integration test: a turn where extraction returns an empty/near-empty result records the degraded-output signal (matches `chat-inference-cost-controls` spec scenario)
+- [ ] 6.3 Document, in a short note alongside design.md's Decision 1 outcome (task 3.5), how to review this signal periodically post-launch — this is a manual review process, not an automated alert, consistent with this change's eval process being a local/manual exercise

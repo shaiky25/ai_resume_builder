@@ -37,5 +37,5 @@
 
 ## 6. Validation
 
-- [ ] 6.1 End-to-end manual pass: sign in, converse until preview unblurs with real (non-mock) content, start checkout, complete payment, confirm export unlocks — no step relies on mocked data
+- [x] 6.1 End-to-end manual pass: sign in, converse until preview unblurs with real (non-mock) content, start checkout, complete payment, confirm export unlocks — no step relies on mocked data
 - [x] 6.2 Confirm no regressions in existing `handleChatRequest`, `ExportControls`, and `PreviewPane` test suites after wiring changes

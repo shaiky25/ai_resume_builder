@@ -32,3 +32,16 @@ The system SHALL mark the portions of the composed system prompt that do not cha
 - **GIVEN** a session where structured extraction has just persisted updated resume context
 - **WHEN** the next chat turn composes the system prompt
 - **THEN** the system does not serve stale cached resume context — the cache reflects the updated context
+
+### Requirement: Degraded extraction output is recorded for later review
+The system SHALL record a signal when a turn's structured-extraction output is empty or near-empty despite the conversation clearly containing resume-relevant content, so a lower-cost model tier's real-world quality can be reviewed after launch rather than assumed from the one-time pre-launch eval alone.
+
+#### Scenario: Empty extraction after resume-relevant content is flagged
+- **GIVEN** a chat turn whose conversation content clearly contains resume-relevant material (e.g. the user stated a job title or described work experience)
+- **WHEN** structured extraction for that turn returns an empty or near-empty result
+- **THEN** a signal is recorded referencing the request, without altering the response already delivered to the user
+
+#### Scenario: Normal extraction output is not flagged
+- **GIVEN** a chat turn whose structured-extraction output reflects the resume-relevant content of the conversation
+- **WHEN** extraction completes
+- **THEN** no degraded-output signal is recorded

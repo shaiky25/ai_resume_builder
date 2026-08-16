@@ -13,22 +13,30 @@ export const RESUME_EXTRACTION_TOOL_NAME = "record_resume_fields";
 export const RESUME_EXTRACTION_TOOL = {
   name: RESUME_EXTRACTION_TOOL_NAME,
   description:
-    "Records the resume-relevant fields extracted from the conversation so far. Call this with the best current understanding of the user's resume, using empty strings/arrays for fields not yet known from the conversation.",
+    "Records the resume-relevant fields extracted from the conversation so far. Rewrite and organize what the user said into proper resume language — never copy the user's raw chat text verbatim into a field. If a field genuinely isn't known yet from the conversation, use an empty string or empty array for it; never use a placeholder word like 'unknown' or 'N/A'.",
   input_schema: {
     type: "object" as const,
     properties: {
-      name: { type: "string", description: "The user's full name" },
-      title: { type: "string", description: "The user's target job title or role" },
-      summary: { type: "string", description: "A short professional summary" },
+      name: { type: "string", description: "The user's full name, exactly as they stated it. Empty string if not yet mentioned." },
+      title: { type: "string", description: "The user's target job title or role, phrased as a resume headline. Empty string if not yet known." },
+      summary: {
+        type: "string",
+        description:
+          "A short, polished professional summary written in resume style (concise, third-person-omitted, achievement-oriented) — a rewrite, not a copy of anything the user typed.",
+      },
       experience: {
         type: "array",
-        description: "Work experience entries, most recent first",
+        description: "Work experience entries, most recent first, written in resume style.",
         items: {
           type: "object",
           properties: {
             company: { type: "string" },
             role: { type: "string" },
-            description: { type: "string" },
+            description: {
+              type: "string",
+              description:
+                "A concise, resume-style rewrite of the responsibilities/impact for this role — not a verbatim copy of the user's chat message.",
+            },
           },
           required: ["company", "role", "description"],
         },
@@ -79,7 +87,19 @@ export class AnthropicResumeExtractionModelClient implements ResumeExtractionMod
       max_tokens: 2048,
       tools: [RESUME_EXTRACTION_TOOL],
       tool_choice: { type: "tool", name: RESUME_EXTRACTION_TOOL_NAME },
-      messages: conversation.map((turn) => ({ role: turn.role, content: turn.content })),
+      // `conversation` ends with the assistant's just-generated reply, but
+      // the API rejects a message list that doesn't end in a user turn
+      // (no assistant-message prefill support). Append a trailing user
+      // instruction so the list is valid regardless of what the last turn
+      // in `conversation` is.
+      messages: [
+        ...conversation.map((turn) => ({ role: turn.role, content: turn.content })),
+        {
+          role: "user" as const,
+          content:
+            "Call the record_resume_fields tool now. Rewrite what's known into proper resume language rather than copying my messages verbatim, and leave any field you don't have real information for as empty rather than guessing a placeholder.",
+        },
+      ],
     });
 
     const toolUse = message.content.find((block) => block.type === "tool_use") as

@@ -69,35 +69,46 @@ export async function streamChatMessage(params: StreamChatMessageParams): Promis
   const decoder = new TextDecoder();
   let buffer = "";
 
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary !== -1) {
-      const rawEvent = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      boundary = buffer.indexOf("\n\n");
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
+        const rawEvent = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        boundary = buffer.indexOf("\n\n");
 
-      const { event, data } = parseSseEvent(rawEvent);
+        const { event, data } = parseSseEvent(rawEvent);
 
-      if (event === "message") {
-        try {
-          const parsed = JSON.parse(data) as { text?: string };
-          if (parsed.text) onDelta(parsed.text);
-        } catch {
-          // Malformed delta — ignore rather than crash the stream.
+        if (event === "message") {
+          try {
+            const parsed = JSON.parse(data) as { text?: string };
+            if (parsed.text) onDelta(parsed.text);
+          } catch {
+            // Malformed delta — ignore rather than crash the stream.
+          }
+        } else if (event === "done") {
+          onDone();
+          return;
+        } else if (event === "error") {
+          onError({ kind: "stream_error", message: "The response was interrupted. Please try again." });
+          return;
         }
-      } else if (event === "done") {
-        onDone();
-        return;
-      } else if (event === "error") {
-        onError({ kind: "stream_error", message: "The response was interrupted. Please try again." });
-        return;
       }
     }
+  } catch {
+    // The connection dropped mid-read (network blip, server reset, etc.)
+    // before an `event: done`/`event: error` boundary was ever parsed —
+    // surface it rather than leaving the caller waiting forever.
+    onError({ kind: "stream_error", message: "The connection was interrupted. Please try again." });
+    return;
   }
+
+  // The stream ended without ever sending `event: done` or `event: error`.
+  onError({ kind: "stream_error", message: "The connection closed unexpectedly. Please try again." });
 }
 
 function parseSseEvent(raw: string): { event: string; data: string } {
