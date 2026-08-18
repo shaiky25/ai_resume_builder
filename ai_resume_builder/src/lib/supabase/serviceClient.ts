@@ -26,6 +26,7 @@ export function getServiceClient(): SupabaseClient {
 
   cachedServiceClient = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
+    db: { schema: "app" },
   });
 
   return cachedServiceClient;
