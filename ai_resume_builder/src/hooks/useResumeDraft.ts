@@ -42,9 +42,17 @@ export interface UseResumeDraftResult {
 export function useResumeDraft(userId: string | null): UseResumeDraftResult {
   const [resumeDraft, setResumeDraft] = useState<ResumeDraft>(emptyResumeDraft);
 
+  // Reset during render (not in an effect) when the user changes, per
+  // https://react.dev/learn/you-might-not-need-an-effect — avoids the
+  // extra render+commit+effect round trip a `useEffect` reset would cost.
+  const [trackedUserId, setTrackedUserId] = useState(userId);
+  if (userId !== trackedUserId) {
+    setTrackedUserId(userId);
+    setResumeDraft(emptyResumeDraft);
+  }
+
   useEffect(() => {
     if (!userId) {
-      setResumeDraft(emptyResumeDraft);
       return;
     }
 

@@ -60,9 +60,17 @@ const EMPTY_RESULT: UseTailoringInsightsResult = {
 export function useTailoringInsights(userId: string | null): UseTailoringInsightsResult {
   const [result, setResult] = useState<UseTailoringInsightsResult>(EMPTY_RESULT);
 
+  // Reset during render (not in an effect) when the user changes, per
+  // https://react.dev/learn/you-might-not-need-an-effect — avoids the
+  // extra render+commit+effect round trip a `useEffect` reset would cost.
+  const [trackedUserId, setTrackedUserId] = useState(userId);
+  if (userId !== trackedUserId) {
+    setTrackedUserId(userId);
+    setResult(EMPTY_RESULT);
+  }
+
   useEffect(() => {
     if (!userId) {
-      setResult(EMPTY_RESULT);
       return;
     }
 

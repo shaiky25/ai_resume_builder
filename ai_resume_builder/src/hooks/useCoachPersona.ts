@@ -31,9 +31,17 @@ export function useCoachPersona(userId: string | null): UseCoachPersonaResult {
     undefined
   );
 
+  // Reset during render (not in an effect) when the user changes, per
+  // https://react.dev/learn/you-might-not-need-an-effect — avoids the
+  // extra render+commit+effect round trip a `useEffect` reset would cost.
+  const [trackedUserId, setTrackedUserId] = useState(userId);
+  if (userId !== trackedUserId) {
+    setTrackedUserId(userId);
+    setCoachPersonaState(undefined);
+  }
+
   useEffect(() => {
     if (!userId) {
-      setCoachPersonaState(undefined);
       return;
     }
 
