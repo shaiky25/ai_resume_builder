@@ -29,6 +29,14 @@ export interface ResumeContextGateway {
   persistStructuredOutput(userId: string, structuredOutput: unknown): Promise<void>;
 
   /**
+   * Persists text extracted server-side from an uploaded resume PDF
+   * (resume-pdf-upload) as the user's resume raw text, replacing any
+   * previously stored value (from a prior paste or upload), scoped to
+   * `userId`.
+   */
+  persistRawText(userId: string, rawText: string): Promise<void>;
+
+  /**
    * Persists the baseline assessment (resume-optimization-strategy 3.9),
    * scoped to `userId`, replacing any previously stored value.
    */
@@ -150,6 +158,10 @@ export class SupabaseResumeContextGateway implements ResumeContextGateway {
 
   async persistStructuredOutput(userId: string, structuredOutput: unknown): Promise<void> {
     await this.upsertColumns(userId, { structured_output: structuredOutput }, "structured_output");
+  }
+
+  async persistRawText(userId: string, rawText: string): Promise<void> {
+    await this.upsertColumns(userId, { raw_text: rawText }, "raw_text");
   }
 
   async persistBaselineAssessment(userId: string, baselineAssessment: unknown): Promise<void> {

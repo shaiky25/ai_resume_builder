@@ -7,6 +7,7 @@ import { PersonaPicker } from "@/components/persona/PersonaPicker";
 import { useAuthSession } from "@/components/auth/AuthProvider";
 import { useVoiceInput } from "@/hooks/useVoiceInput";
 import { useResumeDraft } from "@/hooks/useResumeDraft";
+import { useResumePdfUpload } from "@/hooks/useResumePdfUpload";
 import { usePremiumDownloadAccess } from "@/hooks/usePremiumDownloadAccess";
 import { useTargetJob } from "@/hooks/useTargetJob";
 import { useTailoringInsights } from "@/hooks/useTailoringInsights";
@@ -38,6 +39,11 @@ export function ChatExperience() {
     exportRequested,
   } = useTailoringInsights(user?.id ?? null);
   const { coachPersona, setCoachPersona } = useCoachPersona(user?.id ?? null);
+  const {
+    status: resumeUploadStatus,
+    errorMessage: resumeUploadErrorMessage,
+    uploadResumePdf,
+  } = useResumePdfUpload(user?.id ?? null, session?.access_token);
 
   // coach-persona-onboarding 4.3: seed the static, persona-voiced greeting
   // as the first message the moment a persona is available and the
@@ -209,6 +215,9 @@ export function ChatExperience() {
           onStopRecording={voice.stop}
           chatError={chatError}
           suggestedPrompts={PERSONA_SUGGESTED_PROMPTS[coachPersona]}
+          onUploadResumePdf={uploadResumePdf}
+          resumeUploadStatus={resumeUploadStatus}
+          resumeUploadErrorMessage={resumeUploadErrorMessage}
         />
         <PreviewPane
           resumeDraft={resumeDraft}

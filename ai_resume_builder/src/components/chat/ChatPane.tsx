@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatStreamError } from "@/types/chat";
+import type { ResumePdfUploadStatus } from "@/hooks/useResumePdfUpload";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 
@@ -14,6 +15,9 @@ interface ChatPaneProps {
   chatError: ChatStreamError | null;
   /** Persona-voiced chip copy (chat-input-affordances); empty hides the row. */
   suggestedPrompts: string[];
+  onUploadResumePdf: (file: File) => void;
+  resumeUploadStatus: ResumePdfUploadStatus;
+  resumeUploadErrorMessage: string | null;
 }
 
 export function ChatPane({
@@ -27,6 +31,9 @@ export function ChatPane({
   onStopRecording,
   chatError,
   suggestedPrompts,
+  onUploadResumePdf,
+  resumeUploadStatus,
+  resumeUploadErrorMessage,
 }: ChatPaneProps) {
   // The static persona greeting is an assistant message, not a user one — it
   // never counts toward "the visitor has sent a message" for chip visibility
@@ -67,6 +74,26 @@ export function ChatPane({
               {chatError.message}
             </div>
           )}
+          {resumeUploadStatus === "error" && resumeUploadErrorMessage && (
+            <div
+              role="alert"
+              className="mx-4 mt-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300"
+            >
+              {resumeUploadErrorMessage}
+            </div>
+          )}
+          {(resumeUploadStatus === "uploading" || resumeUploadStatus === "extracting") && (
+            <div className="mx-4 mt-3 rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+              {resumeUploadStatus === "uploading"
+                ? "Uploading your resume…"
+                : "Reading your resume…"}
+            </div>
+          )}
+          {resumeUploadStatus === "success" && (
+            <div className="mx-4 mt-3 rounded-lg border border-green-300 bg-green-50 px-3 py-2 text-xs text-green-700 dark:border-green-900 dark:bg-green-950/40 dark:text-green-300">
+              Resume uploaded — your coach now has the full text.
+            </div>
+          )}
           <ChatInput
             disabled={isStreaming}
             onSend={onSend}
@@ -75,6 +102,10 @@ export function ChatPane({
             isRecording={isRecording}
             onStartRecording={onStartRecording}
             onStopRecording={onStopRecording}
+            onUploadResumePdf={onUploadResumePdf}
+            isUploadingResume={
+              resumeUploadStatus === "uploading" || resumeUploadStatus === "extracting"
+            }
           />
           {!isAudioInput && (
             <p className="px-4 pb-2 text-xs text-zinc-400 dark:text-zinc-500">

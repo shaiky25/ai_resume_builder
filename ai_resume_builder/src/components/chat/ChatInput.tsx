@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
 
 interface ChatInputProps {
   disabled: boolean;
@@ -10,6 +10,9 @@ interface ChatInputProps {
   isRecording: boolean;
   onStartRecording: () => void;
   onStopRecording: () => void;
+  /** resume-pdf-upload 3.1: upload a PDF as an alternative to pasting text. */
+  onUploadResumePdf: (file: File) => void;
+  isUploadingResume: boolean;
 }
 
 const MAX_TEXTAREA_HEIGHT_PX = 160;
@@ -22,9 +25,12 @@ export function ChatInput({
   isRecording,
   onStartRecording,
   onStopRecording,
+  onUploadResumePdf,
+  isUploadingResume,
 }: ChatInputProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const resizeTextarea = (element: HTMLTextAreaElement) => {
     element.style.height = "auto";
@@ -53,11 +59,36 @@ export function ChatInput({
     }
   };
 
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) {
+      onUploadResumePdf(file);
+    }
+  };
+
   return (
     <form
       onSubmit={handleSubmit}
       className="flex items-end gap-2 px-4 py-3"
     >
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf,.pdf"
+        onChange={handleFileChange}
+        className="hidden"
+      />
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={disabled || isUploadingResume}
+        title="Upload resume PDF"
+        aria-label="Upload resume PDF"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-zinc-300 text-sm text-zinc-600 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+      >
+        {isUploadingResume ? "…" : "📎"}
+      </button>
       <button
         type="button"
         onClick={onToggleAudioInput}
