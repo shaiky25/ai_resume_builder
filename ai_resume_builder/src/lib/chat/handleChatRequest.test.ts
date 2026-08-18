@@ -20,7 +20,10 @@ import type {
   ChatStreamEvent,
   StreamChatParams,
 } from "./anthropicClient";
-import type { ResumeExtractionModelClient } from "./resumeExtraction";
+import type {
+  ResumeExtractionModelClient,
+  DegradedExtractionSignalDetector,
+} from "./resumeExtraction";
 import type { TailoringStrategyModelClient } from "./tailoringStrategy";
 import type { SatisfactionSignalModelClient } from "./satisfactionSignal";
 import type { ChatTurnInput } from "./types";
@@ -188,20 +191,46 @@ interface FakeResumeExtractionClientOptions {
   throws?: boolean;
 }
 
+interface ResumeExtractionCall {
+  previousStructuredOutput: unknown;
+  latestTurn: ChatTurnInput[];
+}
+
 function createFakeResumeExtractionClient(options: FakeResumeExtractionClientOptions = {}) {
   const { result = null, throws = false } = options;
-  const calls: ChatTurnInput[][] = [];
+  const calls: ResumeExtractionCall[] = [];
 
-  const extractResume = vi.fn(async (conversation: ChatTurnInput[]): Promise<ResumeDraft | null> => {
-    calls.push(conversation);
-    if (throws) {
-      throw new Error("simulated extraction failure");
+  const extractResume = vi.fn(
+    async (previousStructuredOutput: unknown, latestTurn: ChatTurnInput[]): Promise<ResumeDraft | null> => {
+      calls.push({ previousStructuredOutput, latestTurn });
+      if (throws) {
+        throw new Error("simulated extraction failure");
+      }
+      return result;
     }
-    return result;
-  });
+  );
 
   const client: ResumeExtractionModelClient = { extractResume };
   return { client, calls };
+}
+
+interface FakeDegradedExtractionSignalDetectorOptions {
+  result?: boolean;
+}
+
+function createFakeDegradedExtractionSignalDetector(
+  options: FakeDegradedExtractionSignalDetectorOptions = {}
+) {
+  const { result = false } = options;
+  const calls: Array<{ userMessage: string; result: ResumeDraft | null }> = [];
+
+  const detect = vi.fn((userMessage: string, extracted: ResumeDraft | null): boolean => {
+    calls.push({ userMessage, result: extracted });
+    return result;
+  });
+
+  const detector: DegradedExtractionSignalDetector = { detect };
+  return { detector, calls };
 }
 
 function createFakeUsageLogger() {
@@ -304,6 +333,7 @@ function buildDeps(overrides: Partial<ChatRequestDependencies>): ChatRequestDepe
     tailoringStrategyClient: createFakeTailoringStrategyClient(),
     satisfactionSignalClient: createFakeSatisfactionSignalClient(),
     abuseSignalDetector: createFakeAbuseSignalDetector().detector,
+    degradedExtractionSignalDetector: createFakeDegradedExtractionSignalDetector().detector,
     generateRequestId: () => `req-${counter++}`,
     ...overrides,
   };
@@ -452,7 +482,8 @@ describe("handleChatRequest", () => {
     });
 
     expect(extractionCalls).toHaveLength(1);
-    expect(extractionCalls[0]).toEqual([
+    expect(extractionCalls[0].previousStructuredOutput).toBeNull();
+    expect(extractionCalls[0].latestTurn).toEqual([
       { role: "user", content: "Help me rewrite this bullet point." },
       { role: "assistant", content: "Great work, here's a bullet point." },
     ]);
@@ -983,6 +1014,137 @@ describe("handleChatRequest", () => {
         expect.objectContaining({ requestId: expect.any(String) })
       );
     });
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  // 4.4 — extraction payload size is stable across a long session: the
+  // extraction call always receives just the latest turn, never the
+  // client-supplied `history`, no matter how long that history is
+  // (chat-inference-cost-controls).
+  it("bounds the extraction call to the latest turn regardless of how much history the request carries", async () => {
+    const { gateway: resumeContextGateway } = createFakeResumeContextGateway(null);
+    const { client: resumeExtractionClient, calls: extractionCalls } =
+      createFakeResumeExtractionClient();
+
+    const deps = buildDeps({ resumeContextGateway, resumeExtractionClient });
+
+    const longHistory: ChatTurnInput[] = Array.from({ length: 150 }, (_, i) => ({
+      role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `turn ${i}`,
+    }));
+
+    const response = await handleChatRequest(
+      makeRequest({
+        body: { message: "Help me rewrite this bullet point.", history: longHistory },
+      }),
+      deps
+    );
+    await readBodyToText(response);
+
+    await vi.waitFor(() => {
+      expect(extractionCalls).toHaveLength(1);
+    });
+    expect(extractionCalls[0].latestTurn).toHaveLength(2);
+    expect(extractionCalls[0].latestTurn).toEqual([
+      { role: "user", content: "Help me rewrite this bullet point." },
+      { role: "assistant", content: "Great work, here's a bullet point." },
+    ]);
+  });
+
+  // 4.5/4.6 — the previously persisted structured output is threaded into
+  // the extraction call as merge context on every turn, which is what lets
+  // a later correction override an earlier field and lets a field
+  // established early (and never repeated) survive later turns. The actual
+  // merge behavior lives in the real model and is validated by the eval
+  // pass in Task Group 3 — this test covers the pipeline wiring that makes
+  // that merge possible.
+  it("passes the previously persisted structured output as merge context to the extraction call", async () => {
+    const previouslyPersisted: ResumeDraft = {
+      name: "Jordan Rivera",
+      title: "Backend Engineer",
+      summary: "",
+      experience: [{ company: "Acme", role: "Engineer", description: "Built APIs." }],
+    };
+    const context: ResumeContext = {
+      rawText: null,
+      structuredOutput: previouslyPersisted,
+      targetJob: null,
+      baselineAssessment: null,
+      tailoringStrategy: null,
+    };
+    const { gateway: resumeContextGateway } = createFakeResumeContextGateway(context);
+    const { client: resumeExtractionClient, calls: extractionCalls } =
+      createFakeResumeExtractionClient();
+
+    const deps = buildDeps({ resumeContextGateway, resumeExtractionClient });
+
+    const response = await handleChatRequest(
+      makeRequest({ body: { message: "Actually, my title is Senior Backend Engineer." } }),
+      deps
+    );
+    await readBodyToText(response);
+
+    await vi.waitFor(() => {
+      expect(extractionCalls).toHaveLength(1);
+    });
+    expect(extractionCalls[0].previousStructuredOutput).toEqual(previouslyPersisted);
+  });
+
+  // 6.2 — a turn where extraction returns an empty/near-empty result
+  // despite resume-relevant content records the degraded-output signal,
+  // without altering the delivered response.
+  it("logs a degraded-extraction signal when the detector flags the turn, without affecting the delivered response", async () => {
+    const emptyDraft: ResumeDraft = { name: "", title: "", summary: "", experience: [] };
+    const { client: resumeExtractionClient } = createFakeResumeExtractionClient({
+      result: emptyDraft,
+    });
+    const { detector: degradedExtractionSignalDetector, calls: detectorCalls } =
+      createFakeDegradedExtractionSignalDetector({ result: true });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const deps = buildDeps({ resumeExtractionClient, degradedExtractionSignalDetector });
+
+    const response = await handleChatRequest(
+      makeRequest({ body: { message: "I worked as a backend engineer for five years." } }),
+      deps
+    );
+    expect(response.status).toBe(200);
+    const bodyText = await readBodyToText(response);
+    expect(bodyText).toContain("event: done");
+    expect(bodyText).not.toContain("event: error");
+
+    await vi.waitFor(() => {
+      expect(detectorCalls).toEqual([
+        { userMessage: "I worked as a backend engineer for five years.", result: emptyDraft },
+      ]);
+    });
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      "Degraded extraction output signal detected",
+      expect.objectContaining({ requestId: expect.any(String) })
+    );
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  // 6.2 — normal extraction output is not flagged.
+  it("does not log a degraded-extraction signal when the detector does not flag the turn", async () => {
+    const { detector: degradedExtractionSignalDetector } =
+      createFakeDegradedExtractionSignalDetector({ result: false });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const deps = buildDeps({ degradedExtractionSignalDetector });
+
+    const response = await handleChatRequest(makeRequest(), deps);
+    await readBodyToText(response);
+
+    await vi.waitFor(() => {
+      expect(degradedExtractionSignalDetector.detect).toHaveBeenCalled();
+    });
+    expect(consoleErrorSpy).not.toHaveBeenCalledWith(
+      "Degraded extraction output signal detected",
+      expect.anything()
+    );
 
     consoleErrorSpy.mockRestore();
   });

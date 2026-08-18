@@ -1,4 +1,4 @@
-import { getAnthropicClient, CHAT_MODEL } from "./anthropicClient";
+import { getAnthropicClient, CONVERSATION_MODEL } from "./anthropicClient";
 import type { ChatTurnInput } from "./types";
 
 /**
@@ -64,7 +64,7 @@ export class AnthropicSatisfactionSignalModelClient implements SatisfactionSigna
     const client = getAnthropicClient();
 
     const message = await client.messages.create({
-      model: CHAT_MODEL,
+      model: CONVERSATION_MODEL,
       max_tokens: 512,
       tools: [SATISFACTION_SIGNAL_TOOL],
       tool_choice: { type: "tool", name: SATISFACTION_SIGNAL_TOOL_NAME },

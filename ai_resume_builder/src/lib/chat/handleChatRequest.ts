@@ -13,7 +13,9 @@ import { SupabaseUsageLogger, type UsageLogger } from "./usageLogger";
 import { AnthropicChatModelClient, type ChatModelClient, type ChatStream } from "./anthropicClient";
 import {
   AnthropicResumeExtractionModelClient,
+  DeterministicDegradedExtractionSignalDetector,
   type ResumeExtractionModelClient,
+  type DegradedExtractionSignalDetector,
 } from "./resumeExtraction";
 import {
   AnthropicTailoringStrategyModelClient,
@@ -25,6 +27,7 @@ import {
 } from "./satisfactionSignal";
 import { chatRateLimiter, type RateLimiter } from "./rateLimiter";
 import type { ChatApiRequestBody, ChatTurnInput } from "./types";
+import type { ResumeDraft } from "@/types/resume";
 
 /** Flat per-request credit cost. One chat message costs one credit. */
 export const CHAT_CREDIT_COST = 1;
@@ -53,6 +56,7 @@ export interface ChatRequestDependencies {
   tailoringStrategyClient: TailoringStrategyModelClient;
   satisfactionSignalClient: SatisfactionSignalModelClient;
   abuseSignalDetector: AbuseSignalDetector;
+  degradedExtractionSignalDetector: DegradedExtractionSignalDetector;
   generateRequestId: () => string;
 }
 
@@ -69,6 +73,7 @@ export function createDefaultDependencies(): ChatRequestDependencies {
     tailoringStrategyClient: new AnthropicTailoringStrategyModelClient(),
     satisfactionSignalClient: new AnthropicSatisfactionSignalModelClient(),
     abuseSignalDetector: new DeterministicAbuseSignalDetector(),
+    degradedExtractionSignalDetector: new DeterministicDegradedExtractionSignalDetector(),
     generateRequestId: () => randomUUID(),
   };
 }
@@ -371,12 +376,32 @@ export async function handleChatRequest(
 
         let structuredOutput: unknown = null;
         try {
+          // Bounded to the just-completed turn plus the previously
+          // persisted structured output (design.md Decision 3) — not the
+          // full `completedConversation` transcript, so extraction cost no
+          // longer grows with conversation length.
           structuredOutput = await deps.resumeExtractionClient.extractResume(
-            completedConversation
+            resumeContext?.structuredOutput ?? null,
+            [
+              { role: "user", content: body.message },
+              { role: "assistant", content: assistantText },
+            ]
           );
 
           if (structuredOutput) {
             await deps.resumeContextGateway.persistStructuredOutput(user.id, structuredOutput);
+          }
+
+          // Post-launch extraction-quality monitoring (6.1) — observability
+          // only, same failure-isolation/never-affects-response guarantee
+          // as every other post-turn signal in this block.
+          if (
+            deps.degradedExtractionSignalDetector.detect(
+              body.message,
+              structuredOutput as ResumeDraft | null
+            )
+          ) {
+            console.error("Degraded extraction output signal detected", { requestId });
           }
         } catch (err) {
           console.error("Resume structured extraction failed", err, { requestId });

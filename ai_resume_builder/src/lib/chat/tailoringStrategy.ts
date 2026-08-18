@@ -1,4 +1,4 @@
-import { getAnthropicClient, CHAT_MODEL } from "./anthropicClient";
+import { getAnthropicClient, CONVERSATION_MODEL } from "./anthropicClient";
 import type { BaselineAssessment, TailoringStrategy, TargetJob } from "@/types/resume";
 
 /**
@@ -148,7 +148,7 @@ export class AnthropicTailoringStrategyModelClient implements TailoringStrategyM
     const client = getAnthropicClient();
 
     const message = await client.messages.create({
-      model: CHAT_MODEL,
+      model: CONVERSATION_MODEL,
       max_tokens: 1024,
       tools: [BASELINE_ASSESSMENT_TOOL],
       tool_choice: { type: "tool", name: BASELINE_ASSESSMENT_TOOL_NAME },
@@ -174,7 +174,7 @@ export class AnthropicTailoringStrategyModelClient implements TailoringStrategyM
     const client = getAnthropicClient();
 
     const message = await client.messages.create({
-      model: CHAT_MODEL,
+      model: CONVERSATION_MODEL,
       max_tokens: 2048,
       tools: [TAILORING_STRATEGY_TOOL],
       tool_choice: { type: "tool", name: TAILORING_STRATEGY_TOOL_NAME },

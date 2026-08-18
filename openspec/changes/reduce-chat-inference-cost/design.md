@@ -52,4 +52,14 @@ Alternative considered: a sliding window (last N turns) instead of incremental-m
 
 ## Open Questions
 
-- Exact minimum-cacheable-token threshold per model family — confirm against current Anthropic docs at implementation time (flagged in Decision 2).
+- Exact minimum-cacheable-token threshold per model family — confirm against current Anthropic docs at implementation time (flagged in Decision 2). Resolved: per current Anthropic docs (platform.claude.com/docs/en/docs/build-with-claude/prompt-caching), Claude Opus 5 (`CONVERSATION_MODEL`) requires 512 tokens minimum; the combined master-prompt + resume-context block reliably clears this once any resume/LinkedIn context is present (task 2.3).
+
+## Decision 1 Outcome
+
+Not yet run — the Haiku-vs-Sonnet eval pass (Task Group 3) requires a hand-checked sample set run against the real Anthropic API with a local API key, which is explicitly out of scope for an assistant session (see Decision 1 above). `EXTRACTION_MODEL` currently defaults to `claude-haiku-4-5-20251001` per this design's default; record the eval outcome and any resulting model change here once run (task 3.5).
+
+## Post-Launch Extraction-Quality Monitoring (6.3)
+
+`DeterministicDegradedExtractionSignalDetector` (`resumeExtraction.ts`) flags a turn when the user's message looks resume-relevant (a small fixed keyword list — see `looksResumeRelevant`) but the extraction result comes back empty/near-empty. When flagged, `handleChatRequest.ts` logs `"Degraded extraction output signal detected"` via `console.error` with the `requestId`, the same observability-only pattern already used for abuse-signal detection — it never alters the delivered response.
+
+This is a manual review process, not an automated alert (consistent with this change's eval process being a local/manual exercise): periodically search production logs (wherever `console.error` output is aggregated — e.g. the hosting platform's log viewer) for this message, cross-reference the `requestId` against `analytics_events`/`credit_ledger` rows from `usageLogger` for that request to see the turn's token usage, and use a sustained or rising rate of these signals post-launch as the trigger to re-run the Task Group 3 eval and reconsider `EXTRACTION_MODEL`.
